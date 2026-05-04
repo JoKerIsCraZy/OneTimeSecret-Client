@@ -1,4 +1,4 @@
-"""OneTime – professionelles Tkinter-GUI für OneTimeSecret v2."""
+"""OneTimeSecret Client – professionelles Tkinter-GUI für OneTimeSecret v2."""
 
 from __future__ import annotations
 
@@ -496,7 +496,7 @@ except ImportError:  # pragma: no cover
     keyring = None  # type: ignore
     _KEYRING_AVAILABLE = False
 
-KEYRING_SERVICE = "OneTime-OneTimeSecret"
+KEYRING_SERVICE = "OneTimeSecret-Client"
 
 
 @dataclass
@@ -911,7 +911,7 @@ class App(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("OneTime")
+        self.title("OneTimeSecret Client")
         self.geometry("1020x760")
         self.minsize(940, 700)
         self.configure(bg=Theme.BG)
@@ -1043,7 +1043,7 @@ class App(tk.Tk):
             font=("Segoe UI", 16),
         ).pack(side="left")
         tk.Label(
-            brand, text="OneTime", bg=Theme.SIDEBAR, fg=Theme.TEXT,
+            brand, text="OneTimeSecret", bg=Theme.SIDEBAR, fg=Theme.TEXT,
             font=self.f_brand,
         ).pack(side="left", padx=(12, 0))
 
