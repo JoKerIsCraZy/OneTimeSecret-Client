@@ -53,7 +53,7 @@ LANGUAGES: tuple[tuple[str, str], ...] = (
     ("de", "Deutsch"),
     ("en", "English"),
 )
-DEFAULT_LANGUAGE = "de"
+DEFAULT_LANGUAGE = "en"
 
 
 def detect_region_from_url(url: str) -> str:
