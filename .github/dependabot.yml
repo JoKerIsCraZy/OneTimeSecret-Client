@@ -1,6 +1,12 @@
+# Dependabot v2 – richtig konfiguriert
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
 version: 2
+
 updates:
-  # Python-Dependencies aus requirements.txt
+  # ----------------------------------------------------------
+  # Python-Dependencies (requirements.txt)
+  # ----------------------------------------------------------
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -8,15 +14,36 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Europe/Zurich"
-    open-pull-requests-limit: 5
+    target-branch: "main"
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"           # PR rebased sich selbst, wenn main weiterzieht
+    versioning-strategy: "increase"    # bumpt Pinned-Versions in requirements.txt
+    reviewers:
+      - "JoKerIsCraZy"
+    assignees:
+      - "JoKerIsCraZy"
     labels:
       - "dependencies"
       - "python"
     commit-message:
       prefix: "deps"
       include: "scope"
+    groups:
+      # Minor/Patch in einem PR buendeln statt 5 separate PRs/Woche
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      # Security-Patches sofort, ohne Bündelung
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
-  # GitHub-Actions selbst aktuell halten (actions/checkout@v4, etc.)
+  # ----------------------------------------------------------
+  # GitHub-Actions selbst (actions/checkout, setup-python, etc.)
+  # ----------------------------------------------------------
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -24,10 +51,26 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Europe/Zurich"
+    target-branch: "main"
     open-pull-requests-limit: 5
+    rebase-strategy: "auto"
+    reviewers:
+      - "JoKerIsCraZy"
+    assignees:
+      - "JoKerIsCraZy"
     labels:
       - "dependencies"
       - "github-actions"
     commit-message:
       prefix: "ci"
       include: "scope"
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
