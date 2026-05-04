@@ -1,0 +1,56 @@
+name: Bug Report
+description: Fehler oder unerwartetes Verhalten melden
+title: "[Bug]: "
+labels: ["bug"]
+
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Was ist passiert?
+      description: Beschreibe das Problem so konkret wie möglich.
+      placeholder: "Beim Klick auf 'Erzeugen' passiert nichts."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduktion
+      description: Welche Schritte führen zum Fehler?
+      placeholder: |
+        1. App öffnen
+        2. Nachricht eingeben
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App-Version
+      placeholder: "v1.2.3 (siehe Releases) oder Commit-SHA"
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Betriebssystem
+      placeholder: "Windows 11 26100"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Falls die App via Konsole gestartet wird, hier die Log-Ausgabe einfügen. KEINE API-Keys posten!
+      render: shell
