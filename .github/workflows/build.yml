@@ -1,0 +1,65 @@
+name: Build OneTime.exe
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compile sanity check
+        run: python -m py_compile OneTime.py
+
+      - name: Build single-file .exe
+        run: |
+          pyinstaller --onefile --windowed --name OneTime `
+            --hidden-import=keyring.backends.Windows `
+            --hidden-import=win32timezone `
+            OneTime.py
+
+      - name: Verify build output
+        run: |
+          if (-not (Test-Path dist/OneTime.exe)) {
+            Write-Error "OneTime.exe wurde nicht erzeugt"
+            exit 1
+          }
+          Get-Item dist/OneTime.exe | Format-List Name, Length, LastWriteTime
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OneTime-windows-${{ github.sha }}
+          path: dist/OneTime.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OneTime.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
