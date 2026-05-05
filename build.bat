@@ -19,6 +19,8 @@ python -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name OneTimeSecret-Client ^
+    --icon assets/onetime.ico ^
+    --add-data "assets/onetime.ico;assets" ^
     --hidden-import=keyring.backends.Windows ^
     --hidden-import=win32timezone ^
     OneTimeSecret_Client.py

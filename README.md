@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/onetime_preview.png" alt="OneTimeSecret Client" width="120" />
+
 # OneTimeSecret Client
 
 **A polished Windows desktop client for [OneTimeSecret](https://onetimesecret.com)**
@@ -98,6 +100,10 @@ OneTimeSecret-Client/
 ├── OneTimeSecret_Client.py     # Single-file Tkinter app (~1.7k lines)
 ├── requirements.txt            # requests, keyring
 ├── build.bat                   # Local PyInstaller build
+├── assets/
+│   ├── onetime.ico             # App icon (multi-res, 16-256)
+│   ├── onetime_preview.png     # 512px preview / README header
+│   └── generate_icon.py        # Reproducible icon generator (Pillow)
 └── .github/
     ├── workflows/              # build, release, lint, codeql
     ├── ISSUE_TEMPLATE/         # bug_report, feature_request
