@@ -85,28 +85,40 @@ For tagged releases, the `release.yml` workflow builds, versions, and publishes 
 
 ## CI / CD
 
-| Workflow            | Trigger                       | Purpose                                          |
-| ------------------- | ----------------------------- | ------------------------------------------------ |
-| `build.yml`         | Push / PR to `main`           | Compile sanity + PyInstaller build (artifact)    |
-| `release.yml`       | Tag `v*.*.*` or manual        | Build, version, and publish a GitHub Release     |
-| `lint.yml`          | Push / PR                     | Ruff lint + format check (advisory)              |
-| `codeql.yml`        | Push / PR + weekly cron       | Security & quality scanning                      |
-| `dependabot.yml`    | Weekly                        | Grouped dependency updates with rebase strategy  |
+| Workflow              | Trigger                       | Purpose                                                |
+| --------------------- | ----------------------------- | ------------------------------------------------------ |
+| `build.yml`           | Push / PR to `main`           | Compile sanity + PyInstaller build (artifact)          |
+| `release-please.yml`  | Push to `main`                | Open / update a release PR with version bump + CHANGELOG (SemVer from Conventional Commits) |
+| `release.yml`         | Tag `v*.*.*` or manual        | Build the `.exe` and attach it to the GitHub Release   |
+| `lint.yml`            | Push / PR                     | Ruff lint + format check (advisory)                    |
+| `codeql.yml`          | Push / PR + weekly cron       | Security & quality scanning                            |
+| `dependabot.yml`      | Weekly                        | Grouped dependency updates with rebase strategy        |
+
+### Release flow
+
+1. Land PRs on `main` using **Conventional Commits** (`feat:`, `fix:`, `docs:`, …). `feat!:` or `BREAKING CHANGE:` triggers a major bump.
+2. `release-please.yml` opens (or updates) a `chore(main): release X.Y.Z` PR with the next version + a generated `CHANGELOG.md`.
+3. Merging that PR creates the tag `vX.Y.Z` and a GitHub Release.
+4. The tag push fires `release.yml`, which builds the `.exe` and uploads it to that Release.
+
+You never have to tag manually — but you still can (`git tag v1.2.3 && git push origin v1.2.3`) for hotfixes.
 
 ## Project layout
 
 ```
 OneTimeSecret-Client/
-├── OneTimeSecret_Client.py     # Single-file Tkinter app (~1.7k lines)
-├── requirements.txt            # requests, keyring
-├── build.bat                   # Local PyInstaller build
+├── OneTimeSecret_Client.py            # Single-file Tkinter app (~1.7k lines)
+├── requirements.txt                   # requests, keyring
+├── build.bat                          # Local PyInstaller build
+├── release-please-config.json         # SemVer + changelog rules
+├── .release-please-manifest.json      # Current version (managed by release-please)
 ├── assets/
-│   ├── onetime.ico             # App icon (multi-res, 16-256)
-│   ├── onetime_preview.png     # 512px preview / README header
-│   └── generate_icon.py        # Reproducible icon generator (Pillow)
+│   ├── onetime.ico                    # App icon (multi-res, 16-256)
+│   ├── onetime_preview.png            # 512px preview / README header
+│   └── generate_icon.py               # Reproducible icon generator (Pillow)
 └── .github/
-    ├── workflows/              # build, release, lint, codeql
-    ├── ISSUE_TEMPLATE/         # bug_report, feature_request
+    ├── workflows/                     # build, release, release-please, lint, codeql
+    ├── ISSUE_TEMPLATE/                # bug_report, feature_request
     ├── PULL_REQUEST_TEMPLATE.md
     └── dependabot.yml
 ```
