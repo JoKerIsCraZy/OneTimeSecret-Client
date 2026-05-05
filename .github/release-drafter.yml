@@ -35,7 +35,7 @@ categories:
       - 'dependencies'
       - 'deps'
 
-change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-template: '* $TITLE by @$AUTHOR in $URL'
 change-title-escapes: '\<*_&'
 
 version-resolver:
