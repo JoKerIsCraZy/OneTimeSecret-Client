@@ -59,6 +59,8 @@ jobs:
       - name: Build single-file .exe
         run: |
           pyinstaller --onefile --windowed --name OneTimeSecret-Client `
+            --icon assets/onetime.ico `
+            --add-data "assets/onetime.ico;assets" `
             --hidden-import=keyring.backends.Windows `
             --hidden-import=win32timezone `
             OneTimeSecret_Client.py

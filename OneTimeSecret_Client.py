@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import tkinter as tk
 import webbrowser
@@ -16,6 +17,15 @@ from typing import Callable, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import requests
+
+
+def _resource_path(*parts: str) -> Path:
+    """Resolve a bundled resource path for both source runs and PyInstaller builds."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base.joinpath(*parts)
+
+
+ICON_PATH: Path = _resource_path("assets", "onetime.ico")
 
 logger = logging.getLogger("onetimesecret")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -915,6 +925,7 @@ class App(tk.Tk):
         self.geometry("1020x760")
         self.minsize(940, 700)
         self.configure(bg=Theme.BG)
+        self._apply_window_icon()
 
         self.settings_store = SettingsStore()
         self.history = HistoryStore()
@@ -938,6 +949,18 @@ class App(tk.Tk):
         self._build_ui()
         self._bind_shortcuts()
         self._center_window()
+
+    # ---- Window chrome ----
+
+    def _apply_window_icon(self) -> None:
+        """Set the Tk window icon. Falls back silently to the Tk default."""
+        if not ICON_PATH.exists():
+            logger.debug("App icon not found at %s; using Tk default", ICON_PATH)
+            return
+        try:
+            self.iconbitmap(default=str(ICON_PATH))
+        except tk.TclError as exc:
+            logger.debug("Could not apply window icon: %s", exc)
 
     # ---- Settings application ----
 
