@@ -49,7 +49,7 @@ jobs:
           Get-Item dist/OneTimeSecret-Client.exe | Format-List Name, Length, LastWriteTime
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OneTimeSecret-Client-${{ github.sha }}
           path: dist/OneTimeSecret-Client.exe
