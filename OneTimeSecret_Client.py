@@ -8,7 +8,6 @@ import os
 import sys
 import threading
 import tkinter as tk
-import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,9 +40,6 @@ API_URL  = "https://eu.onetimesecret.com/api/v2/secret/conceal"
 # ----------------------------------------------------
 
 _API_HOST: str = urlparse(API_URL).hostname or "onetimesecret.com"
-LINK_BASE: str = f"https://{_API_HOST}/secret"
-METADATA_BASE: str = f"https://{_API_HOST}/private"
-SHARE_DOMAIN: str = _API_HOST
 REQUEST_TIMEOUT_SECONDS: int = 20
 
 STATE_NEW = "new"
@@ -333,8 +329,7 @@ class OTSClient:
             raise OTSError(f"Antwort ohne Secret-Key: {data}")
         if not metadata_key:
             raise OTSError(f"Antwort ohne Metadata-Key: {data}")
-        logger.info("share: state=%s secret_key=%s… meta_id=%s…",
-                    state, secret_key[:6], metadata_identifier[:6])
+        logger.info("share completed: secret_key=<redacted> meta_id=<redacted> state=<redacted>")
         return ShareResult(secret_key=secret_key, metadata_key=metadata_key,
                            metadata_identifier=metadata_identifier, state=state)
 
@@ -600,6 +595,7 @@ class SettingsStore:
             if isinstance(data, dict):
                 merged.update({k: v for k, v in data.items() if v not in (None, "")})
         except (FileNotFoundError, OSError):
+            # Settings file missing or unreadable -> fall back to defaults silently.
             pass
         except json.JSONDecodeError:
             logger.exception("Settings-Datei korrupt – verwende Defaults.")
@@ -1657,11 +1653,13 @@ class App(tk.Tk):
                 try:
                     w.destroy()
                 except Exception:
+                    # Widget may already be destroyed by Tk teardown; best-effort cleanup.
                     pass
         if hasattr(self, "toast"):
             try:
                 self.toast.destroy()
             except Exception:
+                # Toast may already be gone; best-effort cleanup.
                 pass
         self._nav_items.clear()
         self._sections.clear()
@@ -1825,6 +1823,7 @@ class App(tk.Tk):
             try:
                 self.after_cancel(self._toast_job)
             except Exception:
+                # Scheduled callback may have already fired; ignore.
                 pass
         self._toast_job = self.after(duration, self.toast.place_forget)
 
