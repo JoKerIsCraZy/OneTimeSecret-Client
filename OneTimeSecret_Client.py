@@ -329,7 +329,7 @@ class OTSClient:
             raise OTSError(f"Antwort ohne Secret-Key: {data}")
         if not metadata_key:
             raise OTSError(f"Antwort ohne Metadata-Key: {data}")
-        logger.info("share: state=%s secret_key=<redacted> meta_id=<redacted>", state)
+        logger.info("share completed: secret_key=<redacted> meta_id=<redacted> state=<redacted>")
         return ShareResult(secret_key=secret_key, metadata_key=metadata_key,
                            metadata_identifier=metadata_identifier, state=state)
 
