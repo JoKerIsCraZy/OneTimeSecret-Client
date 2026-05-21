@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+    types: [opened, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +13,11 @@ permissions:
 jobs:
   update_release_draft:
     name: Update release draft
+    # Skip on Dependabot PRs: GitHub forces a read-only GITHUB_TOKEN for
+    # dependabot[bot]-triggered workflows regardless of `permissions:` blocks,
+    # which causes release-drafter to 404 when reading the repo config.
+    # The push:main event after merge re-runs the drafter with full perms.
+    if: github.actor != 'dependabot[bot]'
     permissions:
       contents: write
       pull-requests: write
