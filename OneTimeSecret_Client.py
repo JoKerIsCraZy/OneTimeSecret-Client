@@ -49,6 +49,9 @@ REQUEST_TIMEOUT_SECONDS: int = 20
 
 STATE_NEW = "new"
 
+# Eigene Fehlerklasse (kein API-Wert): Aufruf ohne hinterlegte Zugangsdaten.
+MISSING_CONFIG = "MissingConfig"
+
 # ---- Regionen / Sprache ----
 REGIONS: dict[str, tuple[str, str]] = {
     # key -> (Anzeige-Label, Host)
@@ -417,7 +420,7 @@ class OTSClient:
         require_auth: bool = True,
     ) -> dict:
         if require_auth and not self.has_credentials:
-            raise OTSError("API-Konfiguration fehlt.")
+            raise OTSError("API-Konfiguration fehlt.", error_type=MISSING_CONFIG)
         try:
             response = self._session.request(
                 method, url,
@@ -1201,6 +1204,13 @@ class App(tk.Tk):
 
     def t(self, key: str, **fmt: object) -> str:
         return t(key, self.lang, **fmt)
+
+    def _error_text(self, exc: OTSError) -> str:
+        """Fehlende Zugangsdaten sind der häufigste Fall beim Erststart – dafür gibt
+        es eine lokalisierte Meldung, alles andere kommt vom Server."""
+        if exc.error_type == MISSING_CONFIG:
+            return self.t("error.api_config")
+        return str(exc)
 
     # ---- Fonts / Styles ----
 
@@ -2181,7 +2191,10 @@ class App(tk.Tk):
         try:
             new_state = self.client.burn(identifier)
         except OTSError as exc:
-            self.after(0, lambda: self._on_burn_failed(str(exc), from_result))
+            # Meldung vorher binden: `exc` ist nach dem except-Block nicht mehr
+            # gebunden, das Lambda läuft aber erst später im Mainloop.
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_burn_failed(message, from_result))
             return
         self.after(0, lambda: self._on_burned(identifier, new_state, from_result))
 
@@ -2218,11 +2231,13 @@ class App(tk.Tk):
         try:
             info = probe.ping()
         except OTSError as exc:
-            self.after(0, lambda: self._on_test_done(None, str(exc)))
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_test_done(None, message))
             return
         except Exception as exc:  # pragma: no cover - defensiv
             logger.exception("Verbindungstest fehlgeschlagen")
-            self.after(0, lambda: self._on_test_done(None, str(exc)))
+            message = str(exc)
+            self.after(0, lambda: self._on_test_done(None, message))
             return
         finally:
             probe.close()
@@ -2255,7 +2270,8 @@ class App(tk.Tk):
         try:
             new_state = self.client.fetch_status(identifier)
         except OTSError as exc:
-            self.after(0, lambda: self._show_toast(f"Fehler: {exc}", ok=False))
+            message = self._error_text(exc)
+            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
             return
         self.after(0, lambda: self._on_state_refreshed(identifier, new_state, also_update_result))
 
@@ -2381,10 +2397,12 @@ class App(tk.Tk):
             secret_link = result.share_url or f"{self.link_base}/{result.secret_key}"
             self.after(0, lambda: self._on_success(secret_link, result, ttl_preset, recipient))
         except OTSError as exc:
-            self.after(0, lambda: self._on_error(str(exc)))
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_error(message))
         except Exception as exc:
             logger.exception("Unerwarteter Fehler beim Senden")
-            self.after(0, lambda: self._on_error(f"Unerwarteter Fehler: {exc}"))
+            message = self.t("error.unexpected", error=exc)
+            self.after(0, lambda: self._on_error(message))
 
     def _on_success(
         self,
