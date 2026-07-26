@@ -11,11 +11,17 @@ import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import font as tkfont, ttk
+from tkinter import font as tkfont, messagebox, ttk
 from typing import Callable, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry  # type: ignore
+except ImportError:  # pragma: no cover - urllib3 ships with requests
+    Retry = None  # type: ignore
 
 
 def _resource_path(*parts: str) -> Path:
@@ -39,10 +45,12 @@ API_KEY  = ""
 API_URL  = "https://eu.onetimesecret.com/api/v2/secret/conceal"
 # ----------------------------------------------------
 
-_API_HOST: str = urlparse(API_URL).hostname or "onetimesecret.com"
 REQUEST_TIMEOUT_SECONDS: int = 20
 
 STATE_NEW = "new"
+
+# Eigene Fehlerklasse (kein API-Wert): Aufruf ohne hinterlegte Zugangsdaten.
+MISSING_CONFIG = "MissingConfig"
 
 # ---- Regionen / Sprache ----
 REGIONS: dict[str, tuple[str, str]] = {
@@ -135,7 +143,17 @@ STRINGS: dict[str, dict[str, str]] = {
                                 "en": "Refreshing {n} entries …"},
     "history.row.status":      {"de": "Status",        "en": "Status"},
     "history.row.link":        {"de": "Link",          "en": "Link"},
+    "history.row.burn":        {"de": "Verbrennen",    "en": "Burn"},
     "history.copy_meta":       {"de": "Status-Link kopiert", "en": "Status link copied"},
+    "burn.action":             {"de": "Verbrennen",    "en": "Burn"},
+    "burn.confirm_title":      {"de": "Secret verbrennen?", "en": "Burn secret?"},
+    "burn.confirm":            {"de": "Der Empfänger-Link wird sofort ungültig. Die Nachricht kann danach von niemandem mehr abgerufen werden.\n\nFortfahren?",
+                                "en": "The recipient link becomes invalid immediately. Nobody will be able to retrieve the message afterwards.\n\nContinue?"},
+    "burn.done":               {"de": "Secret verbrannt – Link ist ungültig",
+                                "en": "Secret burned – link is invalid"},
+    "burn.failed":             {"de": "Verbrennen fehlgeschlagen: {error}",
+                                "en": "Burn failed: {error}"},
+    "burn.busy":               {"de": "Verbrenne …",   "en": "Burning …"},
     "settings.eyebrow":        {"de": "EINSTELLUNGEN", "en": "SETTINGS"},
     "settings.title":          {"de": "API & Konfiguration", "en": "API & Configuration"},
     "settings.subtitle":       {"de": "Zugangsdaten, Region und Sprache anpassen.",
@@ -155,7 +173,12 @@ STRINGS: dict[str, dict[str, str]] = {
     "settings.save":           {"de": "Speichern",     "en": "Save"},
     "settings.saved":          {"de": "Einstellungen gespeichert", "en": "Settings saved"},
     "settings.reset_done":     {"de": "Auf Standard zurückgesetzt", "en": "Reset to defaults"},
+    "settings.testing":        {"de": "Teste …",       "en": "Testing …"},
     "settings.test_ok":        {"de": "Verbindung OK", "en": "Connection OK"},
+    "settings.test_ok_full":   {"de": "Verbindung & Login OK · Server {version} ({status})",
+                                "en": "Connection & login OK · server {version} ({status})"},
+    "settings.test_ok_anon":   {"de": "Server erreichbar ({version}) – keine Zugangsdaten hinterlegt",
+                                "en": "Server reachable ({version}) – no credentials configured"},
     "settings.test_fail":      {"de": "Verbindung fehlgeschlagen: {error}",
                                 "en": "Connection failed: {error}"},
     "settings.keyring_yes":    {"de": "API-Key wird im Windows Credential Manager gespeichert (DPAPI-verschlüsselt).",
@@ -270,7 +293,24 @@ class Theme:
 # ============================================================
 
 class OTSError(RuntimeError):
-    """Wird ausgelöst, wenn der OneTimeSecret-Service nicht erreichbar ist oder unerwartete Daten liefert."""
+    """Wird ausgelöst, wenn der OneTimeSecret-Service nicht erreichbar ist oder unerwartete Daten liefert.
+
+    ``error_type`` ist die maschinenlesbare Fehlerklasse der API (ADR-013), auf die
+    aufrufender Code verzweigen kann; ``request_id`` dient dem Support-Abgleich.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str = "",
+        request_id: str = "",
+        status_code: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.request_id = request_id
+        self.status_code = status_code
 
 
 class ShareResult(NamedTuple):
@@ -278,9 +318,47 @@ class ShareResult(NamedTuple):
     metadata_key: str
     metadata_identifier: str
     state: str
+    share_domain: str = ""
+    share_url: str = ""
+    receipt_shortid: str = ""
+
+
+class ServiceInfo(NamedTuple):
+    status: str
+    version: str
+    authenticated: bool
+
+
+def _first_str(*candidates: object) -> str:
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return ""
+
+
+def _flag(value: object) -> bool:
+    """Die API typisiert Booleans teils als String ("true") oder Zahl – tolerant auswerten."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
 
 
 class OTSClient:
+    """Dünner Wrapper um die OneTimeSecret API v2 (Basic Auth, JSON)."""
+
+    # Reihenfolge = Priorität: terminale Zustände zuerst.
+    _STATE_FLAGS: tuple[tuple[str, str], ...] = (
+        ("burned", "is_burned"),
+        ("revealed", "is_revealed"),
+        ("expired", "is_expired"),
+        ("orphaned", "is_orphaned"),
+        ("previewed", "is_previewed"),
+    )
+
     def __init__(
         self,
         url: str,
@@ -295,9 +373,125 @@ class OTSClient:
         self.key = key
         self.share_domain = share_domain or (urlparse(url).hostname or "onetimesecret.com")
         self.timeout = timeout
+        self._session = self._build_session()
+
+    # ---- Session / Transport ----
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        """Session mit Keep-Alive und Backoff. Retries nur für GET – ein wiederholtes
+        POST /conceal würde ein zweites Secret anlegen."""
+        session = requests.Session()
+        session.headers.update({
+            "Accept": "application/json",
+            "User-Agent": "OneTimeSecret-Client (+https://github.com/JoKerIsCraZy/OneTimeSecret-Client)",
+        })
+        if Retry is not None:
+            retry = Retry(
+                total=2, connect=2, read=2, status=2,
+                backoff_factor=0.5,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset({"GET"}),
+                respect_retry_after_header=True,
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+        return session
+
+    def close(self) -> None:
+        self._session.close()
+
+    def _api_base(self) -> str:
+        parsed = urlparse(self.url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.user and self.key)
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: Optional[dict] = None,
+        require_auth: bool = True,
+    ) -> dict:
+        if require_auth and not self.has_credentials:
+            raise OTSError("API-Konfiguration fehlt.", error_type=MISSING_CONFIG)
+        try:
+            response = self._session.request(
+                method, url,
+                auth=(self.user, self.key) if self.has_credentials else None,
+                json=json_body,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            logger.exception("OneTimeSecret API request failed (%s %s)", method, url)
+            raise OTSError(f"Netzwerkfehler: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise self._error_from_response(response)
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise OTSError("API-Antwort war kein gültiges JSON.") from exc
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _error_from_response(response: requests.Response) -> OTSError:
+        """Baut aus dem Fehler-Envelope {error, error_type, message, error_id, request_id}
+        eine sprechende Exception."""
+        code = response.status_code
+        payload: dict = {}
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except ValueError:
+            # Kein JSON-Envelope (z. B. Proxy-/Gateway-Fehlerseite) – dann bleibt es
+            # bei der generischen Meldung anhand des Statuscodes.
+            logger.debug("API error response body is not valid JSON (status=%s).", code)
+
+        error_type = _first_str(payload.get("error_type"))
+        request_id = _first_str(payload.get("request_id"))
+        error_id = _first_str(payload.get("error_id"))
+        # In v2 ist `error` die nutzerseitige Meldung, `message` die Legacy-Variante.
+        server_msg = _first_str(payload.get("error"), payload.get("message"))
+        field = _first_str(payload.get("field"))
+
+        if code in (401, 403):
+            text = "Zugangsdaten abgelehnt – E-Mail und API-Key prüfen."
+        elif code == 404:
+            text = "Nicht gefunden – Secret ist abgelaufen, verbrannt oder gehört zu einem anderen Account."
+        elif code == 429:
+            retry_after = response.headers.get("Retry-After", "")
+            text = "Rate-Limit erreicht – bitte kurz warten."
+            if retry_after:
+                text = f"{text} (Retry-After: {retry_after}s)"
+        elif code == 422:
+            text = server_msg or "Eingabe wurde abgelehnt (422)."
+            if field:
+                text = f"{text} [Feld: {field}]"
+        else:
+            text = server_msg or f"HTTP {code}"
+
+        if server_msg and code not in (422,) and server_msg not in text:
+            text = f"{text} – {server_msg}"
+
+        logger.error(
+            "API error: status=%s type=%s field=%s request_id=%s error_id=%s msg=%s",
+            code, error_type or "-", field or "-", request_id or "-", error_id or "-", server_msg or "-",
+        )
+        return OTSError(text, error_type=error_type, request_id=request_id, status_code=code)
+
+    # ---- Secrets ----
 
     def share(self, secret: str, ttl_seconds: int, recipient: Optional[str] = None) -> ShareResult:
-        if not all((self.url, self.user, self.key)):
+        if not self.url:
             raise OTSError("API-Konfiguration fehlt.")
         body: dict = {
             "secret": {
@@ -309,84 +503,114 @@ class OTSClient:
         }
         if recipient:
             body["secret"]["recipient"] = recipient
-        try:
-            response = requests.post(
-                self.url, auth=(self.user, self.key),
-                json=body, headers={"Accept": "application/json"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            logger.exception("OneTimeSecret API request failed")
-            raise OTSError(f"Netzwerkfehler: {exc}") from exc
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise OTSError("API-Antwort war kein gültiges JSON.") from exc
 
-        secret_key, metadata_key, metadata_identifier, state = self._extract_keys(data)
-        if not secret_key:
-            raise OTSError(f"Antwort ohne Secret-Key: {data}")
-        if not metadata_key:
-            raise OTSError(f"Antwort ohne Metadata-Key: {data}")
+        data = self._request("POST", self.url, json_body=body)
+        result = self._share_result(data)
+        if not result.secret_key:
+            raise OTSError("Antwort ohne Secret-Key.")
+        if not result.metadata_key:
+            raise OTSError("Antwort ohne Metadata-Key.")
+        # Nichts aus der Antwort loggen (siehe #17) – Keys und Metadaten sind sensibel.
         logger.info("share completed: secret_key=<redacted> meta_id=<redacted> state=<redacted>")
-        return ShareResult(secret_key=secret_key, metadata_key=metadata_key,
-                           metadata_identifier=metadata_identifier, state=state)
+        return result
 
     def fetch_status(self, identifier: str) -> str:
+        """Liefert den Zustand des *Secrets* (nicht des Receipts) über den Owner-Endpoint."""
         if not identifier:
             raise OTSError("Kein Identifier vorhanden.")
-        url = f"{self._api_base()}/api/v2/receipt/{identifier}"
-        try:
-            response = requests.get(
-                url, auth=(self.user, self.key),
-                headers={"Accept": "application/json"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise OTSError(f"Status-Abfrage fehlgeschlagen: {exc}") from exc
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise OTSError("Status-Antwort war kein gültiges JSON.") from exc
-        record = data.get("record") if isinstance(data.get("record"), dict) else {}
-        secret_obj = record.get("secret") if isinstance(record.get("secret"), dict) else {}
-        for candidate in (secret_obj.get("state"), record.get("state"), data.get("state")):
-            if isinstance(candidate, str) and candidate:
-                return candidate
-        return "unknown"
+        data = self._request("GET", f"{self._api_base()}/api/v2/receipt/{identifier}")
+        return self._state_from_receipt(data)
 
-    def _api_base(self) -> str:
-        parsed = urlparse(self.url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+    def burn(self, identifier: str) -> str:
+        """Vernichtet das Secret vor dem Abruf. Der Empfänger-Link wird sofort ungültig."""
+        if not identifier:
+            raise OTSError("Kein Identifier vorhanden.")
+        data = self._request(
+            "POST", f"{self._api_base()}/api/v2/receipt/{identifier}/burn",
+            json_body={},
+        )
+        state = self._state_from_receipt(data)
+        return state if state != "unknown" else "burned"
+
+    def ping(self) -> ServiceInfo:
+        """Erreichbarkeit über die auth-freien Endpoints, Credentials über /receipt/recent."""
+        base = self._api_base()
+        status_data = self._request("GET", f"{base}/api/v2/status", require_auth=False)
+        version_data = self._request("GET", f"{base}/api/v2/version", require_auth=False)
+
+        status = _first_str(status_data.get("status")) or "ok"
+        version = self._format_version(version_data.get("version"))
+
+        authenticated = False
+        if self.has_credentials:
+            self._request("GET", f"{base}/api/v2/receipt/recent")
+            authenticated = True
+        return ServiceInfo(status=status, version=version, authenticated=authenticated)
+
+    # ---- Response-Mapping ----
 
     @staticmethod
-    def _extract_keys(data: dict) -> tuple[str, str, str, str]:
+    def _format_version(raw: object) -> str:
+        """/api/v2/version liefert die Version als Liste (["0","25","11"]); je nach
+        Deployment sind aber auch String oder Objekt möglich."""
+        if isinstance(raw, (list, tuple)):
+            return ".".join(str(part) for part in raw) or "?"
+        if isinstance(raw, dict):
+            return _first_str(raw.get("version"), raw.get("commit")) or "?"
+        if isinstance(raw, str):
+            return raw or "?"
+        return str(raw) if raw is not None else "?"
+
+    @classmethod
+    def _state_from_receipt(cls, data: dict) -> str:
+        """Receipt-Antworten führen den Secret-Zustand in `secret_state` bzw. in den
+        is_*-Flags. `record.state` ist der Zustand des *Receipts* und läuft dem
+        Secret voraus (z. B. "shared", während das Secret noch "new" ist) – daher
+        nur als letzter Fallback."""
+        record = data.get("record") if isinstance(data.get("record"), dict) else {}
+
+        secret_state = _first_str(record.get("secret_state"))
+        if secret_state:
+            return secret_state
+
+        for state, flag_key in cls._STATE_FLAGS:
+            if _flag(record.get(flag_key)):
+                return state
+
+        return _first_str(record.get("state"), data.get("state")) or "unknown"
+
+    @staticmethod
+    def _share_result(data: dict) -> ShareResult:
         record = data.get("record") if isinstance(data.get("record"), dict) else {}
         secret_obj = record.get("secret") if isinstance(record.get("secret"), dict) else {}
         receipt_obj = record.get("receipt") if isinstance(record.get("receipt"), dict) else {}
 
-        def first_str(*candidates: object) -> str:
-            for candidate in candidates:
-                if isinstance(candidate, str) and candidate:
-                    return candidate
-            return ""
-
-        secret_key = first_str(
+        secret_key = _first_str(
             secret_obj.get("key"), secret_obj.get("identifier"),
             secret_obj.get("shortid"), data.get("secret_key"),
         )
-        metadata_key = first_str(
+        metadata_key = _first_str(
             receipt_obj.get("key"), receipt_obj.get("identifier"),
             receipt_obj.get("shortid"), data.get("metadata_key"),
         )
-        metadata_identifier = first_str(
+        metadata_identifier = _first_str(
             receipt_obj.get("identifier"), receipt_obj.get("key"),
             receipt_obj.get("shortid"), data.get("metadata_key"),
         )
-        state = first_str(secret_obj.get("state"), STATE_NEW) or STATE_NEW
-        return secret_key, metadata_key, metadata_identifier, state
+        # Die Domain aus der Antwort gewinnt – bei Custom-Domain-Accounts weicht sie
+        # vom API-Host ab, aus dem der Client sonst den Link basteln würde.
+        share_domain = _first_str(record.get("share_domain"), receipt_obj.get("share_domain"))
+        share_url = f"https://{share_domain}/secret/{secret_key}" if (share_domain and secret_key) else ""
+        state = _first_str(secret_obj.get("state"), STATE_NEW) or STATE_NEW
+        return ShareResult(
+            secret_key=secret_key,
+            metadata_key=metadata_key,
+            metadata_identifier=metadata_identifier,
+            state=state,
+            share_domain=share_domain,
+            share_url=share_url,
+            receipt_shortid=_first_str(receipt_obj.get("shortid")),
+        )
 
 
 # ============================================================
@@ -967,6 +1191,13 @@ class App(tk.Tk):
         self.api_host = urlparse(settings.api_url).hostname or "onetimesecret.com"
         self.link_base = f"https://{self.api_host}/secret"
         self.metadata_base = f"https://{self.api_host}/private"
+
+        # __dict__ statt getattr: tk.Tk bringt selbst eine Methode `client` mit,
+        # die getattr sonst als "vorheriger Client" zurückgibt.
+        previous = self.__dict__.get("client")
+        if isinstance(previous, OTSClient):
+            previous.close()
+
         self.client = OTSClient(
             settings.api_url, settings.api_user, settings.api_key,
             share_domain=self.api_host,
@@ -975,6 +1206,13 @@ class App(tk.Tk):
 
     def t(self, key: str, **fmt: object) -> str:
         return t(key, self.lang, **fmt)
+
+    def _error_text(self, exc: OTSError) -> str:
+        """Fehlende Zugangsdaten sind der häufigste Fall beim Erststart – dafür gibt
+        es eine lokalisierte Meldung, alles andere kommt vom Server."""
+        if exc.error_type == MISSING_CONFIG:
+            return self.t("error.api_config")
+        return str(exc)
 
     # ---- Fonts / Styles ----
 
@@ -1287,12 +1525,18 @@ class App(tk.Tk):
         # Action row
         actions = tk.Frame(view, bg=Theme.SURFACE)
         actions.grid(row=4, column=0, sticky="we", pady=(28, 0))
-        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+
+        self.result_burn_btn = FlatButton(
+            actions, self.t("burn.action"), self._burn_last_secret,
+            primary=False, ghost=True, font_obj=self.f_button, padx=18, pady=12,
+        )
+        self.result_burn_btn.grid(row=0, column=0, sticky="w")
 
         FlatButton(
             actions, self.t("result.new"), self._reset_to_form,
             primary=True, font_obj=self.f_button, padx=24, pady=12,
-        ).grid(row=0, column=1, sticky="e")
+        ).grid(row=0, column=2, sticky="e")
 
         return view
 
@@ -1528,6 +1772,15 @@ class App(tk.Tk):
             ghost=True, font_obj=self.f_button, padx=18, pady=11,
         ).pack(side="left")
 
+        self.test_btn = FlatButton(
+            actions, self.t("settings.test"),
+            on_click=lambda: self._test_connection(
+                url_var.get().strip(), user_var.get().strip(), key_var.get(),
+            ),
+            primary=False, font_obj=self.f_button, padx=18, pady=11,
+        )
+        self.test_btn.pack(side="left", padx=(10, 0))
+
         FlatButton(
             actions, self.t("settings.save"),
             on_click=lambda: self._save_settings(
@@ -1744,6 +1997,12 @@ class App(tk.Tk):
             lambda k=entry.metadata_key: self._copy_metadata_link(k),
             primary=False, font_obj=self.f_caption, padx=12, pady=6,
         ).pack(side="left", padx=2)
+        if self._is_burnable(entry.last_state):
+            FlatButton(
+                actions, self.t("history.row.burn"),
+                lambda i=entry.metadata_identifier: self._burn_secret(i),
+                primary=False, ghost=True, font_obj=self.f_caption, padx=12, pady=6,
+            ).pack(side="left", padx=2)
         FlatButton(
             actions, "×",
             lambda i=entry.metadata_identifier: self._delete_history_entry(i),
@@ -1900,6 +2159,104 @@ class App(tk.Tk):
             return
         self._refresh_history_entry(identifier, also_update_result=True)
 
+    # ---- Burn ----
+
+    TERMINAL_STATES = frozenset({"burned", "revealed", "expired", "orphaned"})
+
+    def _is_burnable(self, state: str) -> bool:
+        return (state or "").lower() not in self.TERMINAL_STATES
+
+    def _burn_last_secret(self) -> None:
+        identifier = self._last_metadata_identifier
+        if not identifier:
+            self._show_toast(self.t("result.no_status"), ok=False)
+            return
+        self._burn_secret(identifier, from_result=True)
+
+    def _burn_secret(self, identifier: str, *, from_result: bool = False) -> None:
+        if not identifier:
+            self._show_toast(self.t("error.no_id"), ok=False)
+            return
+        if not messagebox.askyesno(
+            self.t("burn.confirm_title"), self.t("burn.confirm"),
+            icon="warning", default="no", parent=self,
+        ):
+            return
+        if from_result:
+            self.result_burn_btn.set_text(self.t("burn.busy"))
+            self.result_burn_btn.set_enabled(False)
+        threading.Thread(
+            target=self._burn_worker, args=(identifier, from_result), daemon=True,
+        ).start()
+
+    def _burn_worker(self, identifier: str, from_result: bool) -> None:
+        try:
+            new_state = self.client.burn(identifier)
+        except OTSError as exc:
+            # Meldung vorher binden: `exc` ist nach dem except-Block nicht mehr
+            # gebunden, das Lambda läuft aber erst später im Mainloop.
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_burn_failed(message, from_result))
+            return
+        self.after(0, lambda: self._on_burned(identifier, new_state, from_result))
+
+    def _on_burned(self, identifier: str, new_state: str, from_result: bool) -> None:
+        self.history.update_state(identifier, new_state)
+        self._show_toast(self.t("burn.done"), ok=True, duration=4000)
+        if from_result:
+            self.result_burn_btn.set_text(self.t("burn.action"))
+            color, label = self._state_visual(new_state)
+            self.result_status_label.configure(text=f"●  {label}", fg=color)
+        if self._current_section == "history":
+            self._render_history()
+
+    def _on_burn_failed(self, message: str, from_result: bool) -> None:
+        if from_result:
+            self.result_burn_btn.set_text(self.t("burn.action"))
+            self.result_burn_btn.set_enabled(True)
+        self._show_toast(self.t("burn.failed", error=message), ok=False, duration=5000)
+
+    # ---- Connection test ----
+
+    def _test_connection(self, url: str, user: str, key: str) -> None:
+        self.test_btn.set_text(self.t("settings.testing"))
+        self.test_btn.set_enabled(False)
+        threading.Thread(
+            target=self._test_connection_worker,
+            args=(url or self.settings.api_url, user, key),
+            daemon=True,
+        ).start()
+
+    def _test_connection_worker(self, url: str, user: str, key: str) -> None:
+        """Testet die im Formular stehenden Werte, nicht die gespeicherten."""
+        probe = OTSClient(url, user, key, timeout=self.settings.request_timeout)
+        try:
+            info = probe.ping()
+        except OTSError as exc:
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_test_done(None, message))
+            return
+        except Exception as exc:  # pragma: no cover - defensiv
+            logger.exception("Verbindungstest fehlgeschlagen")
+            message = str(exc)
+            self.after(0, lambda: self._on_test_done(None, message))
+            return
+        finally:
+            probe.close()
+        self.after(0, lambda: self._on_test_done(info, ""))
+
+    def _on_test_done(self, info: Optional[ServiceInfo], error: str) -> None:
+        self.test_btn.set_text(self.t("settings.test"))
+        self.test_btn.set_enabled(True)
+        if info is None:
+            self._show_toast(self.t("settings.test_fail", error=error), ok=False, duration=5000)
+            return
+        if info.authenticated:
+            msg = self.t("settings.test_ok_full", version=info.version, status=info.status)
+        else:
+            msg = self.t("settings.test_ok_anon", version=info.version)
+        self._show_toast(msg, ok=True, duration=4000)
+
     # ---- History actions ----
 
     def _refresh_history_entry(self, identifier: str, *, also_update_result: bool = False) -> None:
@@ -1915,7 +2272,8 @@ class App(tk.Tk):
         try:
             new_state = self.client.fetch_status(identifier)
         except OTSError as exc:
-            self.after(0, lambda: self._show_toast(f"Fehler: {exc}", ok=False))
+            message = self._error_text(exc)
+            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
             return
         self.after(0, lambda: self._on_state_refreshed(identifier, new_state, also_update_result))
 
@@ -1931,18 +2289,41 @@ class App(tk.Tk):
             )
 
     def _refresh_all_history(self) -> None:
-        entries = self.history.entries()
-        if not entries:
+        identifiers = [e.metadata_identifier for e in self.history.entries() if e.metadata_identifier]
+        if not identifiers:
             self._show_toast(self.t("history.empty"), ok=True)
             return
-        self._show_toast(self.t("history.refreshing", n=len(entries)), ok=True, duration=1500)
-        for entry in entries:
-            if entry.metadata_identifier:
-                threading.Thread(
-                    target=self._refresh_history_entry_worker,
-                    args=(entry.metadata_identifier, False),
-                    daemon=True,
-                ).start()
+        self._show_toast(self.t("history.refreshing", n=len(identifiers)), ok=True, duration=1500)
+        # Ein Worker, der die Einträge seriell abfragt: bei 200 Einträgen wären es
+        # sonst 200 parallele Threads/Verbindungen – und ein sicheres Rate-Limit.
+        threading.Thread(
+            target=self._refresh_all_worker, args=(identifiers,), daemon=True,
+        ).start()
+
+    def _refresh_all_worker(self, identifiers: list[str]) -> None:
+        failed = 0
+        for identifier in identifiers:
+            try:
+                new_state = self.client.fetch_status(identifier)
+            except OTSError as exc:
+                failed += 1
+                logger.warning("Status-Refresh für %s fehlgeschlagen: %s", identifier[:8], exc)
+                continue
+            self.after(0, lambda i=identifier, s=new_state: self._apply_refreshed_state(i, s))
+        self.after(0, lambda: self._on_refresh_all_done(len(identifiers), failed))
+
+    def _apply_refreshed_state(self, identifier: str, new_state: str) -> None:
+        self.history.update_state(identifier, new_state)
+        if identifier == self._last_metadata_identifier:
+            color, label = self._state_visual(new_state)
+            self.result_status_label.configure(text=f"●  {label}", fg=color)
+
+    def _on_refresh_all_done(self, total: int, failed: int) -> None:
+        if self._current_section == "history":
+            self._render_history()
+        if failed:
+            self._show_toast(f"{total - failed}/{total} aktualisiert, {failed} fehlgeschlagen",
+                             ok=False, duration=4000)
 
     def _copy_metadata_link(self, metadata_key: str) -> None:
         if not metadata_key:
@@ -1977,7 +2358,9 @@ class App(tk.Tk):
             ttl_seconds=ttl_seconds,
             metadata_key=result.metadata_key,
             metadata_identifier=result.metadata_identifier,
-            secret_preview=result.secret_key[:8],
+            # Bewusst die (unkritische) Receipt-shortid, nicht der Anfang des
+            # Share-Tokens – die History liegt im Klartext auf der Platte.
+            secret_preview=result.receipt_shortid,
             last_state=result.state,
             last_checked=now,
         )
@@ -2011,13 +2394,17 @@ class App(tk.Tk):
     def _request_thread(self, secret: str, ttl_preset: TTLPreset, recipient: Optional[str]) -> None:
         try:
             result = self.client.share(secret, ttl_preset.seconds, recipient)
-            secret_link = f"{self.link_base}/{result.secret_key}"
+            # share_url stammt aus der Antwort (korrekt auch bei Custom Domains);
+            # der aus dem API-Host gebaute Link ist nur der Fallback.
+            secret_link = result.share_url or f"{self.link_base}/{result.secret_key}"
             self.after(0, lambda: self._on_success(secret_link, result, ttl_preset, recipient))
         except OTSError as exc:
-            self.after(0, lambda: self._on_error(str(exc)))
+            message = self._error_text(exc)
+            self.after(0, lambda: self._on_error(message))
         except Exception as exc:
             logger.exception("Unerwarteter Fehler beim Senden")
-            self.after(0, lambda: self._on_error(f"Unerwarteter Fehler: {exc}"))
+            message = self.t("error.unexpected", error=exc)
+            self.after(0, lambda: self._on_error(message))
 
     def _on_success(
         self,
@@ -2031,6 +2418,8 @@ class App(tk.Tk):
         self.submit_btn.set_enabled(True)
 
         self._last_metadata_identifier = result.metadata_identifier
+        self.result_burn_btn.set_text(self.t("burn.action"))
+        self.result_burn_btn.set_enabled(True)
         self.clipboard_clear()
         self.clipboard_append(link)
         self.update_idletasks()

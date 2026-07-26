@@ -29,6 +29,8 @@ The API key is stored in the **Windows Credential Manager** (DPAPI-encrypted) vi
 - **Send** — Compose and conceal secrets with TTL presets (5 min … 14 days)
 - **History** — Track every secret you create, with live state polling (`waiting / shared / retrieved / burned / expired`)
 - **Status check** — Verify whether a recipient has opened the link, via `GET /api/v2/receipt/<id>`
+- **Burn** — Revoke a secret before it is read, via `POST /api/v2/receipt/<id>/burn`; the recipient link dies instantly
+- **Connection test** — Check server reachability, version and credentials from the settings panel (`GET /api/v2/status`, `/version`, `/receipt/recent`)
 - **Multi-region** — EU, Global, US, UK, CA, NZ, or a custom host
 - **i18n** — English (default) and German, switchable at runtime
 - **Settings panel** — In-app config for credentials, region, default TTL, network timeout
