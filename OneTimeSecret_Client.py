@@ -452,7 +452,9 @@ class OTSClient:
             if isinstance(parsed, dict):
                 payload = parsed
         except ValueError:
-            pass
+            # Kein JSON-Envelope (z. B. Proxy-/Gateway-Fehlerseite) – dann bleibt es
+            # bei der generischen Meldung anhand des Statuscodes.
+            logger.debug("API error response body is not valid JSON (status=%s).", code)
 
         error_type = _first_str(payload.get("error_type"))
         request_id = _first_str(payload.get("request_id"))
