@@ -39,7 +39,6 @@ API_KEY  = ""
 API_URL  = "https://eu.onetimesecret.com/api/v2/secret/conceal"
 # ----------------------------------------------------
 
-_API_HOST: str = urlparse(API_URL).hostname or "onetimesecret.com"
 REQUEST_TIMEOUT_SECONDS: int = 20
 
 STATE_NEW = "new"
