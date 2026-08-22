@@ -108,7 +108,7 @@ For tagged releases, the `release.yml` workflow builds, versions, and publishes 
 | `build.yml`             | Push / PR to `main`           | Compile sanity + PyInstaller build (artifact)          |
 | `release-drafter.yml`   | Push to `main` + PR events    | Maintain a draft release with auto-categorised changelog; auto-label PRs by title prefix |
 | `release.yml`           | Tag `v*.*.*` or manual        | Build the `.exe` and attach it to the GitHub Release   |
-| `tests.yml`             | Push / PR to `main`           | pytest on Windows (API layer, storage, i18n, GUI smoke)|
+| `tests.yml`             | Push / PR to `main`           | pytest on Windows + Linux (API layer, storage, i18n, GUI smoke) |
 | `lint.yml`              | Push / PR                     | Ruff lint + format check                               |
 | `codeql.yml`            | Push / PR + weekly cron       | Security & quality scanning                            |
 | `dependabot.yml`        | Weekly                        | Grouped dependency updates with rebase strategy        |
@@ -160,7 +160,14 @@ OneTimeSecret-Client/
 ## Security
 
 - No credentials in source code
-- API key encrypted at rest via Windows DPAPI (per-user)
+- API key encrypted at rest via Windows DPAPI (per-user). If the keyring is present but
+  the write fails, the key is **not** persisted anywhere and the app says so - it never
+  silently downgrades to plaintext while promising DPAPI
+- Running from source without `keyring` still falls back to plaintext in `settings.json`,
+  but that outcome is reported in the UI on every save
+- `settings.json` and `history.json` are written with owner-only permissions (0600 on
+  POSIX; on Windows the profile ACL applies)
+- Clearing the key or switching accounts deletes the old credential-manager entry
 - HTTPS-only requests — a plain `http://` API URL is refused before the request leaves
   the process (loopback excepted, for self-hosted instances); configurable timeout
 - The share domain returned by the server is validated as a bare host before it is used

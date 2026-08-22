@@ -185,6 +185,15 @@ STRINGS: dict[str, dict[str, str]] = {
     "settings.reset":          {"de": "Zurücksetzen",  "en": "Reset"},
     "settings.save":           {"de": "Speichern",     "en": "Save"},
     "settings.saved":          {"de": "Einstellungen gespeichert", "en": "Settings saved"},
+    "settings.saved_plaintext": {"de": "Gespeichert – ohne Keyring liegt der API-Key im Klartext "
+                                       "in settings.json.",
+                                 "en": "Saved – without a keyring the API key sits in plaintext "
+                                       "in settings.json."},
+    "settings.key_not_stored": {"de": "Einstellungen gespeichert, aber der API-Key konnte nicht im "
+                                      "Credential Manager abgelegt werden – er gilt nur für diese "
+                                      "Sitzung.",
+                                "en": "Settings saved, but the API key could not be placed in the "
+                                      "credential manager – it only applies to this session."},
     "settings.reset_done":     {"de": "Auf Standard zurückgesetzt", "en": "Reset to defaults"},
     "settings.testing":        {"de": "Teste …",       "en": "Testing …"},
     "settings.test_ok":        {"de": "Verbindung OK", "en": "Connection OK"},
@@ -803,6 +812,22 @@ class OTSClient:
 # History
 # ============================================================
 
+def _write_private_text(path: Path, payload: str) -> None:
+    """Schreibt eine Datei, die nur der aktuelle Benutzer lesen kann.
+
+    settings.json und history.json enthalten Zugangsdaten bzw. Receipt-Identifier,
+    mit denen sich Secrets verbrennen lassen. Unter POSIX entstünde ohne diesen
+    Umweg eine 0644-Datei (umask), die jeder lokale Benutzer mitlesen kann; unter
+    Windows regelt die ACL des Profilverzeichnisses den Zugriff."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    if os.name != "nt":
+        # Der Modus aus os.open greift nur bei Neuanlage – bestehende Dateien
+        # aus älteren Versionen nachziehen.
+        os.chmod(path, 0o600)
+
+
 @dataclass
 class HistoryEntry:
     created_at: str
@@ -872,9 +897,9 @@ class HistoryStore:
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
+            _write_private_text(
+                self.path,
                 json.dumps([e.to_dict() for e in self._entries], indent=2, ensure_ascii=False),
-                encoding="utf-8",
             )
         except OSError:
             logger.exception("Konnte History nicht schreiben (%s).", self.path)
@@ -919,6 +944,13 @@ except ImportError:  # pragma: no cover
     _KEYRING_AVAILABLE = False
 
 KEYRING_SERVICE = "OneTimeSecret-Client"
+
+# Wo der API-Key nach einem Speichern liegt. Die Oberfläche meldet das Ergebnis,
+# statt aus "keyring importierbar" auf "sicher gespeichert" zu schließen.
+KEY_STORAGE_KEYRING = "keyring"   # im Credential Manager (DPAPI)
+KEY_STORAGE_FILE = "file"         # Klartext in settings.json – kein Keyring vorhanden
+KEY_STORAGE_FAILED = "failed"     # Keyring vorhanden, Schreiben fehlgeschlagen: nicht gespeichert
+KEY_STORAGE_NONE = "none"         # kein Key eingetragen
 
 
 @dataclass
@@ -984,6 +1016,7 @@ class SettingsStore:
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = path or self._default_path()
         self.keyring_available = _KEYRING_AVAILABLE
+        self.last_key_storage: str = KEY_STORAGE_NONE
         self.current: Settings = self._load()
 
     @staticmethod
@@ -1053,18 +1086,50 @@ class SettingsStore:
 
         return settings
 
-    def save(self, settings: Settings) -> None:
+    def _delete_key_from_keyring(self, user: str) -> None:
+        if not (self.keyring_available and user):
+            return
+        try:
+            keyring.delete_password(KEYRING_SERVICE, user)  # type: ignore
+        except Exception:
+            # Kein Eintrag vorhanden ist der Normalfall und kein Fehler.
+            logger.debug("No keyring entry to delete for the previous user.", exc_info=True)
+
+    def save(self, settings: Settings) -> str:
+        """Speichert die Settings und meldet zurück, wo der API-Key gelandet ist.
+
+        Der Key wird nur dann in settings.json geschrieben, wenn gar kein Keyring
+        vorhanden ist – das ist der dokumentierte Klartext-Fallback für Läufe aus
+        dem Quelltext. Schlägt dagegen ein *vorhandener* Keyring beim Schreiben
+        fehl, wird der Key bewusst nirgends abgelegt: eine stille Herabstufung auf
+        Klartext, während die Oberfläche DPAPI verspricht, wäre schlimmer als ein
+        Key, den man nach dem Neustart erneut eingeben muss."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.keyring_available and settings.api_user and settings.api_key:
-            stored = self._write_key_to_keyring(settings.api_user, settings.api_key)
-            payload = settings.to_dict_safe() if stored else settings.to_dict()
+        previous_user = self.current.api_user
+
+        if not (settings.api_user and settings.api_key):
+            storage = KEY_STORAGE_NONE
+        elif not self.keyring_available:
+            storage = KEY_STORAGE_FILE
+        elif self._write_key_to_keyring(settings.api_user, settings.api_key):
+            storage = KEY_STORAGE_KEYRING
         else:
-            payload = settings.to_dict()
-        self.path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+            storage = KEY_STORAGE_FAILED
+
+        # Alten Eintrag räumen: nach einem Reset, einem geleerten Key-Feld oder
+        # einem Benutzerwechsel bliebe sonst ein gültiges Credential zurück.
+        keep = settings.api_user if storage == KEY_STORAGE_KEYRING else ""
+        if previous_user and previous_user != keep:
+            self._delete_key_from_keyring(previous_user)
+        if settings.api_user and settings.api_user != keep:
+            self._delete_key_from_keyring(settings.api_user)
+
+        payload = settings.to_dict() if storage == KEY_STORAGE_FILE else settings.to_dict_safe()
+        _write_private_text(self.path, json.dumps(payload, indent=2, ensure_ascii=False))
+
         self.current = settings
+        self.last_key_storage = storage
+        return storage
 
 
 # ============================================================
@@ -2098,14 +2163,24 @@ class App(tk.Tk):
             default_ttl=resolve_ttl_key(default_ttl),
         )
         try:
-            self.settings_store.save(new_settings)
+            storage = self.settings_store.save(new_settings)
         except OSError as exc:
             self._show_toast(str(exc), ok=False)
             return
 
         self._apply_settings(self.settings_store.current)
         self._rebuild_ui(stay_on="settings")
-        self._show_toast(self.t("settings.saved"), ok=True)
+        self._show_save_result(storage)
+
+    def _show_save_result(self, storage: str) -> None:
+        """Meldet, wo der Key tatsächlich gelandet ist – eine pauschale
+        Sicherheitszusage wäre falsch, wenn der Keyring-Schreibversuch scheiterte."""
+        if storage == KEY_STORAGE_FAILED:
+            self._show_toast(self.t("settings.key_not_stored"), ok=False, duration=6000)
+        elif storage == KEY_STORAGE_FILE:
+            self._show_toast(self.t("settings.saved_plaintext"), ok=False, duration=5000)
+        else:
+            self._show_toast(self.t("settings.saved"), ok=True)
 
     def _reset_settings(self) -> None:
         defaults = Settings.defaults()

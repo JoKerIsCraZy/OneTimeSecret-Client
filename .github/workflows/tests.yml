@@ -9,10 +9,14 @@ on:
 
 jobs:
   pytest:
-    name: pytest (Windows)
-    # windows-latest, weil die App dort ausgeliefert wird: tkinter und der
-    # keyring-Windows-Backend sind Teil der zu testenden Umgebung.
-    runs-on: windows-latest
+    name: pytest (${{ matrix.os }})
+    # Windows ist die Zielplattform (tkinter, keyring-Backend). Linux laeuft mit,
+    # weil nur dort die POSIX-Dateirechte der Konfigurationsdateien pruefbar sind.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
 
     steps:
       - name: Checkout
@@ -23,6 +27,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+
+      # Der vorgebaute Python braucht die Tk-Laufzeitbibliotheken, sonst
+      # scheitert schon `import tkinter` beim Einlesen des Moduls.
+      - name: Install Tk runtime (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tk
 
       - name: Install dependencies
         run: |

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -217,18 +219,101 @@ def test_key_is_kept_out_of_settings_json_when_stored_in_the_keyring(
     assert ots.SettingsStore(path).current.api_key == "dpapi-key"
 
 
-def test_keyring_failure_falls_back_to_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Schreibt der Credential Manager nicht, darf der Key nicht lautlos verloren gehen."""
+def test_a_failed_keyring_write_never_downgrades_to_plaintext(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ist ein Keyring da und sein Schreiben scheitert, darf der Key nicht
+    stillschweigend im Klartext landen – die UI verspricht dann DPAPI."""
     monkeypatch.setattr(ots, "_KEYRING_AVAILABLE", True)
     monkeypatch.setattr(ots.SettingsStore, "_write_key_to_keyring", lambda self, user, key: False)
     monkeypatch.setattr(ots.SettingsStore, "_read_key_from_keyring", lambda self, user: "")
+    monkeypatch.setattr(ots.SettingsStore, "_delete_key_from_keyring", lambda self, user: None)
 
     path = tmp_path / "settings.json"
-    ots.SettingsStore(path).save(ots.Settings(
-        api_url=ots.API_URL, api_user="me@example.org", api_key="fallback-key",
+    storage = ots.SettingsStore(path).save(ots.Settings(
+        api_url=ots.API_URL, api_user="me@example.org", api_key="never-write-me",
         region="eu", language="en", request_timeout=20, default_ttl="7d",
     ))
-    assert json.loads(path.read_text(encoding="utf-8"))["api_key"] == "fallback-key"
+
+    assert storage == ots.KEY_STORAGE_FAILED
+    on_disk = path.read_text(encoding="utf-8")
+    assert "never-write-me" not in on_disk
+    assert json.loads(on_disk)["api_key"] == ""
+
+
+def test_save_reports_where_the_key_landed(tmp_path: Path, no_keyring: None) -> None:
+    store = ots.SettingsStore(tmp_path / "settings.json")
+    settings = ots.Settings(
+        api_url=ots.API_URL, api_user="me@example.org", api_key="k",
+        region="eu", language="en", request_timeout=20, default_ttl="7d",
+    )
+    assert store.save(settings) == ots.KEY_STORAGE_FILE
+    assert store.save(replace_key(settings, "")) == ots.KEY_STORAGE_NONE
+
+
+def replace_key(settings: ots.Settings, key: str) -> ots.Settings:
+    data = settings.to_dict()
+    data["api_key"] = key
+    return ots.Settings.from_dict(data)
+
+
+def test_clearing_the_key_removes_the_keyring_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nach `Zurücksetzen` darf kein gültiges Credential im Credential Manager
+    zurückbleiben – sonst überlebt der Zugang die Übergabe des Rechners."""
+    vault: dict[str, str] = {"me@example.org": "old-key"}
+    monkeypatch.setattr(ots, "_KEYRING_AVAILABLE", True)
+    monkeypatch.setattr(
+        ots.SettingsStore, "_write_key_to_keyring",
+        lambda self, user, key: bool(vault.__setitem__(user, key) or True),
+    )
+    monkeypatch.setattr(ots.SettingsStore, "_read_key_from_keyring", lambda self, user: vault.get(user, ""))
+    monkeypatch.setattr(ots.SettingsStore, "_delete_key_from_keyring", lambda self, user: vault.pop(user, None))
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"api_user": "me@example.org"}), encoding="utf-8")
+    store = ots.SettingsStore(path)
+    assert store.current.api_key == "old-key"
+
+    store.save(ots.Settings.defaults())
+    assert vault == {}
+
+
+def test_switching_users_removes_the_previous_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault: dict[str, str] = {"old@example.org": "old-key"}
+    monkeypatch.setattr(ots, "_KEYRING_AVAILABLE", True)
+    monkeypatch.setattr(
+        ots.SettingsStore, "_write_key_to_keyring",
+        lambda self, user, key: bool(vault.__setitem__(user, key) or True),
+    )
+    monkeypatch.setattr(ots.SettingsStore, "_read_key_from_keyring", lambda self, user: vault.get(user, ""))
+    monkeypatch.setattr(ots.SettingsStore, "_delete_key_from_keyring", lambda self, user: vault.pop(user, None))
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"api_user": "old@example.org"}), encoding="utf-8")
+    store = ots.SettingsStore(path)
+    store.save(ots.Settings(
+        api_url=ots.API_URL, api_user="new@example.org", api_key="new-key",
+        region="eu", language="en", request_timeout=20, default_ttl="7d",
+    ))
+    assert vault == {"new@example.org": "new-key"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes do not apply on Windows")
+def test_config_files_are_not_world_readable(tmp_path: Path, no_keyring: None) -> None:
+    settings_path = tmp_path / "settings.json"
+    ots.SettingsStore(settings_path).save(ots.Settings(
+        api_url=ots.API_URL, api_user="me@example.org", api_key="k",
+        region="eu", language="en", request_timeout=20, default_ttl="7d",
+    ))
+    history_path = tmp_path / "history.json"
+    ots.HistoryStore(history_path).add(make_entry())
+
+    for path in (settings_path, history_path):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
 
 
 def test_to_dict_safe_drops_the_key() -> None:
