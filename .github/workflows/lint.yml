@@ -25,10 +25,10 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      # Lint im non-blocking Modus mit GitHub-Annotations.
-      # Nach Aufrauemphase auf "ruff check ." (blocking) umstellen.
+      # Blocking: der Baum ist sauber, Regressionen sollen die PR rot faerben.
+      # Regeln, Ignores und line-length stehen in pyproject.toml.
       - name: Ruff lint
-        run: ruff check . --exit-zero --output-format=github
+        run: ruff check . --output-format=github
 
       # Pruefen ob eingerueckt waere; nicht zwingend, nur Info.
       - name: Ruff format check (info)
