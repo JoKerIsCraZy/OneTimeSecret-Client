@@ -14,7 +14,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-
 BG_DARK = (15, 18, 25, 255)
 BG_DARK_TOP = (24, 30, 42, 255)
 ACCENT = (34, 211, 238, 255)
