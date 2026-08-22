@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from tkinter import font as tkfont, messagebox, ttk
-from typing import Callable, NamedTuple, Optional
+from tkinter import font as tkfont
+from tkinter import messagebox, ttk
+from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -122,8 +126,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "result.status_check":     {"de": "Status prüfen", "en": "Check status"},
     "result.status_waiting":   {"de": "noch nicht abgerufen", "en": "not retrieved yet"},
     "result.status_history":   {"de": "siehe Verlauf", "en": "see history"},
-    "result.warning":          {"de": "⚠  Den Empfänger-Link nicht selbst öffnen – er ist nur einmal abrufbar. Mit Status prüfen sehen, ob der Empfänger ihn schon abgerufen hat.",
-                                "en": "⚠  Don't open the recipient link yourself – it can only be retrieved once. Use Check status to see if the recipient has accessed it."},
+    "result.warning":          {"de": "⚠  Den Empfänger-Link nicht selbst öffnen – er ist nur einmal abrufbar. "
+                                      "Mit Status prüfen sehen, ob der Empfänger ihn schon abgerufen hat.",
+                                "en": "⚠  Don't open the recipient link yourself – it can only be retrieved once. "
+                                      "Use Check status to see if the recipient has accessed it."},
     "result.new":              {"de": "Neue Nachricht senden", "en": "Send new message"},
     "result.no_status":        {"de": "Kein Status-Identifier vorhanden.",
                                 "en": "No status identifier available."},
@@ -145,10 +151,17 @@ STRINGS: dict[str, dict[str, str]] = {
     "history.row.link":        {"de": "Link",          "en": "Link"},
     "history.row.burn":        {"de": "Verbrennen",    "en": "Burn"},
     "history.copy_meta":       {"de": "Status-Link kopiert", "en": "Status link copied"},
+    "history.meta.to":         {"de": "an {recipient}", "en": "to {recipient}"},
+    "history.meta.ttl":        {"de": "TTL {ttl}",     "en": "TTL {ttl}"},
+    "history.meta.checked":    {"de": "geprüft {time}", "en": "checked {time}"},
+    "history.refresh_done":    {"de": "{ok}/{total} aktualisiert, {failed} fehlgeschlagen",
+                                "en": "{ok}/{total} refreshed, {failed} failed"},
     "burn.action":             {"de": "Verbrennen",    "en": "Burn"},
     "burn.confirm_title":      {"de": "Secret verbrennen?", "en": "Burn secret?"},
-    "burn.confirm":            {"de": "Der Empfänger-Link wird sofort ungültig. Die Nachricht kann danach von niemandem mehr abgerufen werden.\n\nFortfahren?",
-                                "en": "The recipient link becomes invalid immediately. Nobody will be able to retrieve the message afterwards.\n\nContinue?"},
+    "burn.confirm":            {"de": "Der Empfänger-Link wird sofort ungültig. Die Nachricht kann danach "
+                                      "von niemandem mehr abgerufen werden.\n\nFortfahren?",
+                                "en": "The recipient link becomes invalid immediately. Nobody will be able "
+                                      "to retrieve the message afterwards.\n\nContinue?"},
     "burn.done":               {"de": "Secret verbrannt – Link ist ungültig",
                                 "en": "Secret burned – link is invalid"},
     "burn.failed":             {"de": "Verbrennen fehlgeschlagen: {error}",
@@ -183,8 +196,10 @@ STRINGS: dict[str, dict[str, str]] = {
                                 "en": "Connection failed: {error}"},
     "settings.keyring_yes":    {"de": "API-Key wird im Windows Credential Manager gespeichert (DPAPI-verschlüsselt).",
                                 "en": "API key is stored in Windows Credential Manager (DPAPI-encrypted)."},
-    "settings.keyring_no":     {"de": "Keyring nicht verfügbar – API-Key liegt im Klartext in settings.json. Installiere `pip install keyring` für sichere Speicherung.",
-                                "en": "Keyring not available – API key is stored in plaintext in settings.json. Install `pip install keyring` for secure storage."},
+    "settings.keyring_no":     {"de": "Keyring nicht verfügbar – API-Key liegt im Klartext in settings.json. "
+                                      "Installiere `pip install keyring` für sichere Speicherung.",
+                                "en": "Keyring not available – API key is stored in plaintext in settings.json. "
+                                      "Install `pip install keyring` for secure storage."},
     "state.new":               {"de": "wartet",        "en": "waiting"},
     "state.shared":            {"de": "geteilt",       "en": "shared"},
     "state.previewed":         {"de": "Vorschau",      "en": "preview"},
@@ -200,6 +215,36 @@ STRINGS: dict[str, dict[str, str]] = {
     "error.unexpected":        {"de": "Unerwarteter Fehler: {error}",
                                 "en": "Unexpected error: {error}"},
     "error.no_id":             {"de": "Kein Identifier vorhanden.", "en": "No identifier available."},
+    "error.insecure_url":      {"de": "Unverschlüsselte Verbindung abgelehnt – die API-URL muss mit https:// beginnen.",
+                                "en": "Refusing an unencrypted connection – the API URL must start with https://."},
+    "error.invalid_json":      {"de": "API-Antwort war kein gültiges JSON.",
+                                "en": "API response was not valid JSON."},
+    "error.auth":              {"de": "Zugangsdaten abgelehnt – E-Mail und API-Key prüfen.",
+                                "en": "Credentials rejected – check your email and API key."},
+    "error.not_found":         {"de": "Nicht gefunden – das Secret ist abgelaufen, verbrannt oder gehört "
+                                      "zu einem anderen Account.",
+                                "en": "Not found – the secret has expired, was burned, or belongs to a "
+                                      "different account."},
+    "error.rate_limit":        {"de": "Rate-Limit erreicht – bitte kurz warten.",
+                                "en": "Rate limit reached – please wait a moment."},
+    "error.rate_limit_retry":  {"de": "Rate-Limit erreicht – in {seconds}s erneut versuchen.",
+                                "en": "Rate limit reached – retry in {seconds}s."},
+    "error.rejected":          {"de": "Eingabe wurde abgelehnt (422).",
+                                "en": "Input was rejected (422)."},
+    "error.rejected_field":    {"de": "Eingabe wurde abgelehnt (422) – Feld: {field}.",
+                                "en": "Input was rejected (422) – field: {field}."},
+    "error.http":              {"de": "HTTP {code}", "en": "HTTP {code}"},
+    "error.no_secret_key":     {"de": "Antwort ohne Secret-Key.", "en": "Response contained no secret key."},
+    "error.no_metadata_key":   {"de": "Antwort ohne Metadata-Key.", "en": "Response contained no metadata key."},
+    "ttl.5m":                  {"de": "5 Min",  "en": "5 min"},
+    "ttl.30m":                 {"de": "30 Min", "en": "30 min"},
+    "ttl.1h":                  {"de": "1 Std",  "en": "1 hr"},
+    "ttl.4h":                  {"de": "4 Std",  "en": "4 hrs"},
+    "ttl.12h":                 {"de": "12 Std", "en": "12 hrs"},
+    "ttl.1d":                  {"de": "1 Tag",  "en": "1 day"},
+    "ttl.3d":                  {"de": "3 Tage", "en": "3 days"},
+    "ttl.7d":                  {"de": "7 Tage", "en": "7 days"},
+    "ttl.14d":                 {"de": "14 Tage","en": "14 days"},
 }
 
 
@@ -222,22 +267,55 @@ def t(key: str, lang: str, **fmt: object) -> str:
 
 @dataclass(frozen=True)
 class TTLPreset:
-    label: str
+    """`key` ist der stabile, sprachunabhängige Bezeichner – er wird persistiert
+    und in der History abgelegt. Das Label ist reine Anzeige und übersetzt."""
+
+    key: str
     seconds: int
+
+    def label(self, lang: str) -> str:
+        return t(f"ttl.{self.key}", lang)
 
 
 PRESETS: tuple[TTLPreset, ...] = (
-    TTLPreset("5 Min", 300),
-    TTLPreset("30 Min", 1800),
-    TTLPreset("1 Std", 3600),
-    TTLPreset("4 Std", 14400),
-    TTLPreset("12 Std", 43200),
-    TTLPreset("1 Tag", 86400),
-    TTLPreset("3 Tage", 259200),
-    TTLPreset("7 Tage", 604800),
-    TTLPreset("14 Tage", 1209600),
+    TTLPreset("5m", 300),
+    TTLPreset("30m", 1800),
+    TTLPreset("1h", 3600),
+    TTLPreset("4h", 14400),
+    TTLPreset("12h", 43200),
+    TTLPreset("1d", 86400),
+    TTLPreset("3d", 259200),
+    TTLPreset("7d", 604800),
+    TTLPreset("14d", 1209600),
 )
-DEFAULT_TTL_LABEL: str = "7 Tage"
+DEFAULT_TTL_KEY: str = "7d"
+
+# Vor der Umstellung auf Schlüssel stand das deutsche Label in settings.json /
+# history.json. Alte Dateien sollen ohne Zutun weiterlaufen.
+LEGACY_TTL_LABELS: dict[str, str] = {
+    "5 Min": "5m", "30 Min": "30m", "1 Std": "1h", "4 Std": "4h", "12 Std": "12h",
+    "1 Tag": "1d", "3 Tage": "3d", "7 Tage": "7d", "14 Tage": "14d",
+}
+
+
+def preset_for_key(key: str) -> TTLPreset:
+    by_key = {preset.key: preset for preset in PRESETS}
+    return by_key.get(key) or by_key.get(DEFAULT_TTL_KEY) or PRESETS[0]
+
+
+def preset_for_seconds(seconds: int) -> Optional[TTLPreset]:
+    for preset in PRESETS:
+        if preset.seconds == seconds:
+            return preset
+    return None
+
+
+def resolve_ttl_key(value: str) -> str:
+    """Nimmt einen Schlüssel oder ein Alt-Label und liefert immer einen gültigen Schlüssel."""
+    value = (value or "").strip()
+    if any(preset.key == value for preset in PRESETS):
+        return value
+    return LEGACY_TTL_LABELS.get(value, DEFAULT_TTL_KEY)
 
 
 # ============================================================
@@ -297,6 +375,11 @@ class OTSError(RuntimeError):
 
     ``error_type`` ist die maschinenlesbare Fehlerklasse der API (ADR-013), auf die
     aufrufender Code verzweigen kann; ``request_id`` dient dem Support-Abgleich.
+
+    ``message_key``/``message_args`` erlauben es der UI, den Text in der eingestellten
+    Sprache zu rendern – ``str(exc)`` bleibt die (englische) Fassung für Logs und
+    Kontexte ohne Sprachwahl. ``detail`` ist der unübersetzte Servertext, der an die
+    lokalisierte Meldung angehängt wird.
     """
 
     def __init__(
@@ -306,11 +389,45 @@ class OTSError(RuntimeError):
         error_type: str = "",
         request_id: str = "",
         status_code: Optional[int] = None,
+        message_key: str = "",
+        message_args: Optional[dict] = None,
+        detail: str = "",
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.request_id = request_id
         self.status_code = status_code
+        self.message_key = message_key
+        self.message_args = dict(message_args or {})
+        self.detail = detail
+
+    def localized(self, lang: str) -> str:
+        """Meldung in der gewünschten Sprache; fällt auf den Rohtext zurück."""
+        if not self.message_key:
+            return str(self)
+        text = t(self.message_key, lang, **self.message_args)
+        return f"{text} – {self.detail}" if self.detail else text
+
+
+def _ots_error(
+    message_key: str,
+    *,
+    error_type: str = "",
+    request_id: str = "",
+    status_code: Optional[int] = None,
+    detail: str = "",
+    **message_args: object,
+) -> OTSError:
+    """Baut eine OTSError, deren Text sowohl übersetzbar als auch sofort lesbar ist."""
+    return OTSError(
+        t(message_key, DEFAULT_LANGUAGE, **message_args) + (f" – {detail}" if detail else ""),
+        error_type=error_type,
+        request_id=request_id,
+        status_code=status_code,
+        message_key=message_key,
+        message_args=message_args,
+        detail=detail,
+    )
 
 
 class ShareResult(NamedTuple):
@@ -334,6 +451,23 @@ def _first_str(*candidates: object) -> str:
         if isinstance(candidate, str) and candidate:
             return candidate
     return ""
+
+
+_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$", re.IGNORECASE)
+
+
+def _is_valid_host(value: str) -> bool:
+    """Prüft, ob ein Wert ein reiner Host (optional mit Port) ist.
+
+    Die Share-Domain kommt aus der Serverantwort und landet in einem Link, den der
+    Nutzer weitergibt. Etwas wie `evil.example/x?next=` würde den Empfänger-Link
+    auf eine fremde Adresse umbiegen, `user@evil.example` ihn verschleiern."""
+    return (
+        bool(value)
+        and len(value) <= 253
+        and ".." not in value
+        and _HOST_RE.match(value) is not None
+    )
 
 
 def _flag(value: object) -> bool:
@@ -374,6 +508,9 @@ class OTSClient:
         self.share_domain = share_domain or (urlparse(url).hostname or "onetimesecret.com")
         self.timeout = timeout
         self._session = self._build_session()
+        self._lifecycle = threading.Lock()
+        self._inflight = 0
+        self._closing = False
 
     # ---- Session / Transport ----
 
@@ -401,7 +538,39 @@ class OTSClient:
         return session
 
     def close(self) -> None:
-        self._session.close()
+        """Schließt die Session, sobald kein Request mehr unterwegs ist.
+
+        Ein Settings-Speichern tauscht den Client mitten im Betrieb aus; würde die
+        Session dabei unter einem laufenden Worker weggezogen, bräche dessen Request
+        mit einem irreführenden Netzwerkfehler ab."""
+        with self._lifecycle:
+            self._closing = True
+            idle = self._inflight == 0
+        if idle:
+            self._session.close()
+
+    def _release(self) -> None:
+        with self._lifecycle:
+            self._inflight -= 1
+            close_now = self._closing and self._inflight == 0
+        if close_now:
+            self._session.close()
+
+    # ---- Sicherheit ----
+
+    # Loopback bleibt für selbst gehostete Instanzen ohne TLS erreichbar.
+    PLAINTEXT_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
+    @classmethod
+    def _ensure_secure(cls, url: str) -> None:
+        """Der Client spricht HTTPS. Eine http-URL aus den Settings würde Basic-Auth-
+        Credentials und das Secret im Klartext über die Leitung schicken."""
+        parsed = urlparse(url)
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and (parsed.hostname or "").lower() in cls.PLAINTEXT_HOSTS:
+            return
+        raise _ots_error("error.insecure_url")
 
     def _api_base(self) -> str:
         parsed = urlparse(self.url)
@@ -420,7 +589,11 @@ class OTSClient:
         require_auth: bool = True,
     ) -> dict:
         if require_auth and not self.has_credentials:
-            raise OTSError("API-Konfiguration fehlt.", error_type=MISSING_CONFIG)
+            raise _ots_error("error.api_config", error_type=MISSING_CONFIG)
+        self._ensure_secure(url)
+
+        with self._lifecycle:
+            self._inflight += 1
         try:
             response = self._session.request(
                 method, url,
@@ -430,7 +603,9 @@ class OTSClient:
             )
         except requests.RequestException as exc:
             logger.exception("OneTimeSecret API request failed (%s %s)", method, url)
-            raise OTSError(f"Netzwerkfehler: {exc}") from exc
+            raise _ots_error("error.network", error=exc) from exc
+        finally:
+            self._release()
 
         if response.status_code >= 400:
             raise self._error_from_response(response)
@@ -438,7 +613,7 @@ class OTSClient:
         try:
             data = response.json()
         except ValueError as exc:
-            raise OTSError("API-Antwort war kein gültiges JSON.") from exc
+            raise _ots_error("error.invalid_json") from exc
         return data if isinstance(data, dict) else {}
 
     @staticmethod
@@ -463,36 +638,44 @@ class OTSClient:
         server_msg = _first_str(payload.get("error"), payload.get("message"))
         field = _first_str(payload.get("field"))
 
+        # message_key trägt die übersetzbare Erklärung, detail den unübersetzten
+        # Servertext – die UI setzt beides in der eingestellten Sprache zusammen.
+        args: dict[str, object] = {}
         if code in (401, 403):
-            text = "Zugangsdaten abgelehnt – E-Mail und API-Key prüfen."
+            key = "error.auth"
         elif code == 404:
-            text = "Nicht gefunden – Secret ist abgelaufen, verbrannt oder gehört zu einem anderen Account."
+            key = "error.not_found"
         elif code == 429:
             retry_after = response.headers.get("Retry-After", "")
-            text = "Rate-Limit erreicht – bitte kurz warten."
+            key = "error.rate_limit_retry" if retry_after else "error.rate_limit"
             if retry_after:
-                text = f"{text} (Retry-After: {retry_after}s)"
+                args["seconds"] = retry_after
         elif code == 422:
-            text = server_msg or "Eingabe wurde abgelehnt (422)."
+            key = "error.rejected_field" if field else "error.rejected"
             if field:
-                text = f"{text} [Feld: {field}]"
+                args["field"] = field
         else:
-            text = server_msg or f"HTTP {code}"
-
-        if server_msg and code not in (422,) and server_msg not in text:
-            text = f"{text} – {server_msg}"
+            key = "error.http"
+            args["code"] = code
 
         logger.error(
             "API error: status=%s type=%s field=%s request_id=%s error_id=%s msg=%s",
             code, error_type or "-", field or "-", request_id or "-", error_id or "-", server_msg or "-",
         )
-        return OTSError(text, error_type=error_type, request_id=request_id, status_code=code)
+        return _ots_error(
+            key,
+            error_type=error_type,
+            request_id=request_id,
+            status_code=code,
+            detail=server_msg,
+            **args,
+        )
 
     # ---- Secrets ----
 
     def share(self, secret: str, ttl_seconds: int, recipient: Optional[str] = None) -> ShareResult:
         if not self.url:
-            raise OTSError("API-Konfiguration fehlt.")
+            raise _ots_error("error.api_config", error_type=MISSING_CONFIG)
         body: dict = {
             "secret": {
                 "kind": "conceal",
@@ -507,9 +690,9 @@ class OTSClient:
         data = self._request("POST", self.url, json_body=body)
         result = self._share_result(data)
         if not result.secret_key:
-            raise OTSError("Antwort ohne Secret-Key.")
+            raise _ots_error("error.no_secret_key")
         if not result.metadata_key:
-            raise OTSError("Antwort ohne Metadata-Key.")
+            raise _ots_error("error.no_metadata_key")
         # Nichts aus der Antwort loggen (siehe #17) – Keys und Metadaten sind sensibel.
         logger.info("share completed: secret_key=<redacted> meta_id=<redacted> state=<redacted>")
         return result
@@ -517,14 +700,14 @@ class OTSClient:
     def fetch_status(self, identifier: str) -> str:
         """Liefert den Zustand des *Secrets* (nicht des Receipts) über den Owner-Endpoint."""
         if not identifier:
-            raise OTSError("Kein Identifier vorhanden.")
+            raise _ots_error("error.no_id")
         data = self._request("GET", f"{self._api_base()}/api/v2/receipt/{identifier}")
         return self._state_from_receipt(data)
 
     def burn(self, identifier: str) -> str:
         """Vernichtet das Secret vor dem Abruf. Der Empfänger-Link wird sofort ungültig."""
         if not identifier:
-            raise OTSError("Kein Identifier vorhanden.")
+            raise _ots_error("error.no_id")
         data = self._request(
             "POST", f"{self._api_base()}/api/v2/receipt/{identifier}/burn",
             json_body={},
@@ -600,6 +783,9 @@ class OTSClient:
         # Die Domain aus der Antwort gewinnt – bei Custom-Domain-Accounts weicht sie
         # vom API-Host ab, aus dem der Client sonst den Link basteln würde.
         share_domain = _first_str(record.get("share_domain"), receipt_obj.get("share_domain"))
+        if share_domain and not _is_valid_host(share_domain):
+            logger.warning("Ignoring malformed share_domain from API response.")
+            share_domain = ""
         share_url = f"https://{share_domain}/secret/{secret_key}" if (share_domain and secret_key) else ""
         state = _first_str(secret_obj.get("state"), STATE_NEW) or STATE_NEW
         return ShareResult(
@@ -632,13 +818,20 @@ class HistoryEntry:
     def to_dict(self) -> dict:
         return self.__dict__.copy()
 
+    @staticmethod
+    def _int(value: object) -> int:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0
+
     @classmethod
-    def from_dict(cls, data: dict) -> "HistoryEntry":
+    def from_dict(cls, data: dict) -> HistoryEntry:
         return cls(
             created_at=str(data.get("created_at", "")),
             recipient=data.get("recipient") or None,
             ttl_label=str(data.get("ttl_label", "")),
-            ttl_seconds=int(data.get("ttl_seconds", 0)),
+            ttl_seconds=cls._int(data.get("ttl_seconds", 0)),
             metadata_key=str(data.get("metadata_key", "")),
             metadata_identifier=str(data.get("metadata_identifier", "")),
             secret_preview=str(data.get("secret_preview", "")),
@@ -696,7 +889,7 @@ class HistoryStore:
         self._save()
 
     def update_state(self, metadata_identifier: str, new_state: str) -> None:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
         for entry in self._entries:
             if entry.metadata_identifier == metadata_identifier:
                 entry.last_state = new_state
@@ -736,7 +929,7 @@ class Settings:
     region: str
     language: str
     request_timeout: int
-    default_ttl_label: str
+    default_ttl: str
 
     def to_dict_safe(self) -> dict:
         """Variante ohne api_key (für settings.json, wenn keyring verfügbar)."""
@@ -747,20 +940,31 @@ class Settings:
     def to_dict(self) -> dict:
         return self.__dict__.copy()
 
+    @staticmethod
+    def _timeout(value: object) -> int:
+        """Eine von Hand editierte settings.json darf den Start nicht verhindern."""
+        try:
+            timeout = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return REQUEST_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else REQUEST_TIMEOUT_SECONDS
+
     @classmethod
-    def from_dict(cls, data: dict) -> "Settings":
+    def from_dict(cls, data: dict) -> Settings:
+        # `default_ttl_label` ist der Feldname vor der Umstellung auf TTL-Schlüssel.
+        stored_ttl = data.get("default_ttl") or data.get("default_ttl_label") or DEFAULT_TTL_KEY
         return cls(
             api_url=str(data.get("api_url", "")),
             api_user=str(data.get("api_user", "")),
             api_key=str(data.get("api_key", "")),
             region=str(data.get("region", "") or detect_region_from_url(str(data.get("api_url", "")))),
             language=str(data.get("language", DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE),
-            request_timeout=int(data.get("request_timeout", REQUEST_TIMEOUT_SECONDS) or REQUEST_TIMEOUT_SECONDS),
-            default_ttl_label=str(data.get("default_ttl_label", DEFAULT_TTL_LABEL) or DEFAULT_TTL_LABEL),
+            request_timeout=cls._timeout(data.get("request_timeout", REQUEST_TIMEOUT_SECONDS)),
+            default_ttl=resolve_ttl_key(str(stored_ttl)),
         )
 
     @classmethod
-    def defaults(cls) -> "Settings":
+    def defaults(cls) -> Settings:
         return cls(
             api_url=API_URL,
             api_user=API_USER,
@@ -768,7 +972,7 @@ class Settings:
             region=detect_region_from_url(API_URL),
             language=DEFAULT_LANGUAGE,
             request_timeout=REQUEST_TIMEOUT_SECONDS,
-            default_ttl_label=DEFAULT_TTL_LABEL,
+            default_ttl=DEFAULT_TTL_KEY,
         )
 
 
@@ -809,6 +1013,21 @@ class SettingsStore:
             logger.exception("Keyring write failed.")
             return False
 
+    @staticmethod
+    def _migrate(data: dict) -> dict:
+        """Hebt eine settings.json vom Vorgängerformat an (ohne das Original zu ändern).
+
+        `default_ttl_label` hielt das deutsche Label, `default_ttl` hält den Schlüssel.
+        Fehlt `region`, wird sie aus der URL abgeleitet: sonst gewinnt beim Merge die
+        Default-Region, und das nächste Speichern würde die URL auf deren Host
+        zurücksetzen – der Nutzer verlöre seine Region, ohne sie angefasst zu haben."""
+        patched = dict(data)
+        if not patched.get("default_ttl") and patched.get("default_ttl_label"):
+            patched["default_ttl"] = resolve_ttl_key(str(patched["default_ttl_label"]))
+        if not patched.get("region") and patched.get("api_url"):
+            patched["region"] = detect_region_from_url(str(patched["api_url"]))
+        return patched
+
     def _load(self) -> Settings:
         defaults = Settings.defaults()
         merged = defaults.to_dict()
@@ -817,6 +1036,7 @@ class SettingsStore:
             raw = self.path.read_text(encoding="utf-8")
             data = json.loads(raw)
             if isinstance(data, dict):
+                data = self._migrate(data)
                 merged.update({k: v for k, v in data.items() if v not in (None, "")})
         except (FileNotFoundError, OSError):
             # Settings file missing or unreadable -> fall back to defaults silently.
@@ -933,47 +1153,46 @@ class PillBar(tk.Frame):
         self,
         parent: tk.Misc,
         presets: tuple[TTLPreset, ...],
-        default_label: str,
+        default_key: str,
         on_change: Callable[[TTLPreset], None],
+        *,
+        lang: str = DEFAULT_LANGUAGE,
     ) -> None:
         super().__init__(parent, bg=parent["bg"])
         self._on_change = on_change
         self._labels: dict[str, tk.Label] = {}
-        self._selected = default_label
+        self._selected = resolve_ttl_key(default_key)
         cols = 5
         for index, preset in enumerate(presets):
             row, col = divmod(index, cols)
             pill = tk.Label(
-                self, text=preset.label,
+                self, text=preset.label(lang),
                 bg=parent["bg"], fg=Theme.TEXT_MUTED,
                 font=("Segoe UI", 9), padx=14, pady=7, cursor="hand2",
             )
             pill.grid(row=row, column=col, padx=(0, 6), pady=4, sticky="w")
             pill.bind("<Button-1>", lambda _e, p=preset: self._select(p))
-            pill.bind("<Enter>", lambda _e, p=preset: self._hover(p.label, True))
-            pill.bind("<Leave>", lambda _e, p=preset: self._hover(p.label, False))
-            self._labels[preset.label] = pill
+            pill.bind("<Enter>", lambda _e, p=preset: self._hover(p.key, True))
+            pill.bind("<Leave>", lambda _e, p=preset: self._hover(p.key, False))
+            self._labels[preset.key] = pill
         self._refresh()
 
     @property
-    def selected_label(self) -> str:
+    def selected_key(self) -> str:
         return self._selected
 
     def selected_preset(self) -> TTLPreset:
-        for preset in PRESETS:
-            if preset.label == self._selected:
-                return preset
-        return PRESETS[0]
+        return preset_for_key(self._selected)
 
     def _select(self, preset: TTLPreset) -> None:
-        self._selected = preset.label
+        self._selected = preset.key
         self._refresh()
         self._on_change(preset)
 
-    def _hover(self, label: str, entering: bool) -> None:
-        if label == self._selected:
+    def _hover(self, key: str, entering: bool) -> None:
+        if key == self._selected:
             return
-        widget = self._labels[label]
+        widget = self._labels[key]
         widget.configure(
             bg=Theme.CARD if entering else self["bg"],
             fg=Theme.TEXT if entering else Theme.TEXT_MUTED,
@@ -1187,7 +1406,8 @@ class App(tk.Tk):
     def _apply_settings(self, settings: Settings) -> None:
         """Übernimmt Settings als App-Attribute und (re)initialisiert den API-Client."""
         self.settings = settings
-        self.lang = settings.language if settings.language in {l for l, _ in LANGUAGES} else DEFAULT_LANGUAGE
+        known_languages = {code for code, _label in LANGUAGES}
+        self.lang = settings.language if settings.language in known_languages else DEFAULT_LANGUAGE
         self.api_host = urlparse(settings.api_url).hostname or "onetimesecret.com"
         self.link_base = f"https://{self.api_host}/secret"
         self.metadata_base = f"https://{self.api_host}/private"
@@ -1208,11 +1428,9 @@ class App(tk.Tk):
         return t(key, self.lang, **fmt)
 
     def _error_text(self, exc: OTSError) -> str:
-        """Fehlende Zugangsdaten sind der häufigste Fall beim Erststart – dafür gibt
-        es eine lokalisierte Meldung, alles andere kommt vom Server."""
-        if exc.error_type == MISSING_CONFIG:
-            return self.t("error.api_config")
-        return str(exc)
+        """Der API-Layer liefert die Meldung als Schlüssel plus (unübersetztem)
+        Serverdetail – gerendert wird sie erst hier, in der eingestellten Sprache."""
+        return exc.localized(self.lang)
 
     # ---- Fonts / Styles ----
 
@@ -1420,7 +1638,9 @@ class App(tk.Tk):
 
         # TTL
         self._field_eyebrow(view, self.t("send.ttl")).grid(row=4, column=0, sticky="w", pady=(24, 8))
-        self.pill_bar = PillBar(view, PRESETS, self.settings.default_ttl_label, lambda _p: None)
+        self.pill_bar = PillBar(
+            view, PRESETS, self.settings.default_ttl, lambda _p: None, lang=self.lang,
+        )
         self.pill_bar.grid(row=5, column=0, sticky="w")
 
         # Action bar
@@ -1594,7 +1814,7 @@ class App(tk.Tk):
         inner = tk.Frame(canvas, bg=Theme.SURFACE)
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
 
-        def _sync(_e: tk.Event = None) -> None:
+        def _sync(_e: Optional[tk.Event] = None) -> None:
             canvas.update_idletasks()
             bbox = canvas.bbox("all")
             if bbox:
@@ -1677,7 +1897,7 @@ class App(tk.Tk):
         timeout_var = tk.StringVar(value=str(self.settings.request_timeout))
         region_var = tk.StringVar(value=self.settings.region)
         lang_var = tk.StringVar(value=self.lang)
-        ttl_var = tk.StringVar(value=self.settings.default_ttl_label)
+        ttl_var = tk.StringVar(value=self.settings.default_ttl)
 
         # Region
         self._field_eyebrow(form, self.t("settings.region")).pack(anchor="w", pady=(4, 8))
@@ -1748,7 +1968,7 @@ class App(tk.Tk):
 
         # Default TTL
         self._field_eyebrow(form, self.t("settings.default_ttl")).pack(anchor="w", pady=(28, 8))
-        ttl_options = [(p.label, p.label) for p in PRESETS]
+        ttl_options = [(p.key, p.label(self.lang)) for p in PRESETS]
         ttl_pills = self._build_option_pills(form, ttl_options, ttl_var)
         ttl_pills.pack(anchor="w")
 
@@ -1802,7 +2022,7 @@ class App(tk.Tk):
         parent: tk.Misc,
         options: list[tuple[str, str]],
         var: tk.StringVar,
-    ) -> "tk.Frame":
+    ) -> tk.Frame:
         bar = tk.Frame(parent, bg=Theme.SURFACE)
         labels: dict[str, tk.Label] = {}
         change_callbacks: list[Callable[[], None]] = []
@@ -1875,7 +2095,7 @@ class App(tk.Tk):
             region=region or detect_region_from_url(url),
             language=language or DEFAULT_LANGUAGE,
             request_timeout=timeout,
-            default_ttl_label=default_ttl or DEFAULT_TTL_LABEL,
+            default_ttl=resolve_ttl_key(default_ttl),
         )
         try:
             self.settings_store.save(new_settings)
@@ -1903,17 +2123,13 @@ class App(tk.Tk):
             self._current_section = stay_on
         for w in (self._sidebar_frame, self._divider_frame, self._main_frame):
             if w is not None:
-                try:
+                # Widget may already be destroyed by Tk teardown; best-effort cleanup.
+                with suppress(Exception):
                     w.destroy()
-                except Exception:
-                    # Widget may already be destroyed by Tk teardown; best-effort cleanup.
-                    pass
         if hasattr(self, "toast"):
-            try:
+            # Toast may already be gone; best-effort cleanup.
+            with suppress(Exception):
                 self.toast.destroy()
-            except Exception:
-                # Toast may already be gone; best-effort cleanup.
-                pass
         self._nav_items.clear()
         self._sections.clear()
         self._send_views.clear()
@@ -2047,18 +2263,28 @@ class App(tk.Tk):
         except ValueError:
             return iso_str
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.astimezone().strftime("%d.%m.%Y  %H:%M")
 
     def _format_meta(self, entry: HistoryEntry) -> str:
         bits: list[str] = []
         if entry.recipient:
-            bits.append(f"an {entry.recipient}")
-        if entry.ttl_label:
-            bits.append(f"TTL {entry.ttl_label}")
+            bits.append(self.t("history.meta.to", recipient=entry.recipient))
+        ttl = self._ttl_label(entry)
+        if ttl:
+            bits.append(self.t("history.meta.ttl", ttl=ttl))
         if entry.last_checked and entry.last_checked != entry.created_at:
-            bits.append(f"geprüft {self._format_time(entry.last_checked)}")
+            bits.append(self.t("history.meta.checked", time=self._format_time(entry.last_checked)))
         return "    ·    ".join(bits)
+
+    def _ttl_label(self, entry: HistoryEntry) -> str:
+        """Die Sekunden sind die verlässliche Angabe; das gespeicherte Label ist nur
+        der Fallback für Einträge aus älteren Versionen."""
+        preset = preset_for_seconds(entry.ttl_seconds)
+        if preset:
+            return preset.label(self.lang)
+        legacy = LEGACY_TTL_LABELS.get(entry.ttl_label)
+        return preset_for_key(legacy).label(self.lang) if legacy else entry.ttl_label
 
     # ---- Toast ----
 
@@ -2079,11 +2305,9 @@ class App(tk.Tk):
         self.toast.place(relx=0.5, rely=1.0, anchor="s", y=-22)
         self.toast.lift()
         if self._toast_job is not None:
-            try:
+            # Scheduled callback may have already fired; ignore.
+            with suppress(Exception):
                 self.after_cancel(self._toast_job)
-            except Exception:
-                # Scheduled callback may have already fired; ignore.
-                pass
         self._toast_job = self.after(duration, self.toast.place_forget)
 
     # ---- Form helpers ----
@@ -2185,17 +2409,26 @@ class App(tk.Tk):
         if from_result:
             self.result_burn_btn.set_text(self.t("burn.busy"))
             self.result_burn_btn.set_enabled(False)
+        # Client im Main-Thread festhalten: ein Settings-Speichern währenddessen
+        # tauscht self.client aus, der laufende Request gehört aber zum alten.
         threading.Thread(
-            target=self._burn_worker, args=(identifier, from_result), daemon=True,
+            target=self._burn_worker, args=(self.client, identifier, from_result), daemon=True,
         ).start()
 
-    def _burn_worker(self, identifier: str, from_result: bool) -> None:
+    def _burn_worker(self, client: OTSClient, identifier: str, from_result: bool) -> None:
         try:
-            new_state = self.client.burn(identifier)
+            new_state = client.burn(identifier)
         except OTSError as exc:
             # Meldung vorher binden: `exc` ist nach dem except-Block nicht mehr
             # gebunden, das Lambda läuft aber erst später im Mainloop.
             message = self._error_text(exc)
+            self.after(0, lambda: self._on_burn_failed(message, from_result))
+            return
+        except Exception as exc:
+            # Ohne diesen Zweig stirbt der Thread still und der Button bliebe
+            # dauerhaft auf "Verbrenne …" stehen.
+            logger.exception("Unerwarteter Fehler beim Verbrennen")
+            message = self.t("error.unexpected", error=exc)
             self.after(0, lambda: self._on_burn_failed(message, from_result))
             return
         self.after(0, lambda: self._on_burned(identifier, new_state, from_result))
@@ -2264,15 +2497,22 @@ class App(tk.Tk):
             return
         threading.Thread(
             target=self._refresh_history_entry_worker,
-            args=(identifier, also_update_result),
+            args=(self.client, identifier, also_update_result),
             daemon=True,
         ).start()
 
-    def _refresh_history_entry_worker(self, identifier: str, also_update_result: bool) -> None:
+    def _refresh_history_entry_worker(
+        self, client: OTSClient, identifier: str, also_update_result: bool,
+    ) -> None:
         try:
-            new_state = self.client.fetch_status(identifier)
+            new_state = client.fetch_status(identifier)
         except OTSError as exc:
             message = self._error_text(exc)
+            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
+            return
+        except Exception as exc:
+            logger.exception("Unerwarteter Fehler beim Status-Refresh")
+            message = self.t("error.unexpected", error=exc)
             self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
             return
         self.after(0, lambda: self._on_state_refreshed(identifier, new_state, also_update_result))
@@ -2297,17 +2537,22 @@ class App(tk.Tk):
         # Ein Worker, der die Einträge seriell abfragt: bei 200 Einträgen wären es
         # sonst 200 parallele Threads/Verbindungen – und ein sicheres Rate-Limit.
         threading.Thread(
-            target=self._refresh_all_worker, args=(identifiers,), daemon=True,
+            target=self._refresh_all_worker, args=(self.client, identifiers), daemon=True,
         ).start()
 
-    def _refresh_all_worker(self, identifiers: list[str]) -> None:
+    def _refresh_all_worker(self, client: OTSClient, identifiers: list[str]) -> None:
         failed = 0
         for identifier in identifiers:
             try:
-                new_state = self.client.fetch_status(identifier)
+                new_state = client.fetch_status(identifier)
             except OTSError as exc:
                 failed += 1
                 logger.warning("Status-Refresh für %s fehlgeschlagen: %s", identifier[:8], exc)
+                continue
+            except Exception:
+                # Ein kaputter Eintrag darf die restlichen nicht mitreißen.
+                failed += 1
+                logger.exception("Unerwarteter Fehler beim Status-Refresh (%s)", identifier[:8])
                 continue
             self.after(0, lambda i=identifier, s=new_state: self._apply_refreshed_state(i, s))
         self.after(0, lambda: self._on_refresh_all_done(len(identifiers), failed))
@@ -2322,8 +2567,10 @@ class App(tk.Tk):
         if self._current_section == "history":
             self._render_history()
         if failed:
-            self._show_toast(f"{total - failed}/{total} aktualisiert, {failed} fehlgeschlagen",
-                             ok=False, duration=4000)
+            self._show_toast(
+                self.t("history.refresh_done", ok=total - failed, total=total, failed=failed),
+                ok=False, duration=4000,
+            )
 
     def _copy_metadata_link(self, metadata_key: str) -> None:
         if not metadata_key:
@@ -2350,7 +2597,7 @@ class App(tk.Tk):
         ttl_label: str,
         ttl_seconds: int,
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
         entry = HistoryEntry(
             created_at=now,
             recipient=recipient,
@@ -2387,13 +2634,15 @@ class App(tk.Tk):
         self.progress.start(10)
         threading.Thread(
             target=self._request_thread,
-            args=(secret, ttl_preset, recipient or None),
+            args=(self.client, secret, ttl_preset, recipient or None),
             daemon=True,
         ).start()
 
-    def _request_thread(self, secret: str, ttl_preset: TTLPreset, recipient: Optional[str]) -> None:
+    def _request_thread(
+        self, client: OTSClient, secret: str, ttl_preset: TTLPreset, recipient: Optional[str],
+    ) -> None:
         try:
-            result = self.client.share(secret, ttl_preset.seconds, recipient)
+            result = client.share(secret, ttl_preset.seconds, recipient)
             # share_url stammt aus der Antwort (korrekt auch bei Custom Domains);
             # der aus dem API-Host gebaute Link ist nur der Fallback.
             secret_link = result.share_url or f"{self.link_base}/{result.secret_key}"
@@ -2425,7 +2674,7 @@ class App(tk.Tk):
         self.update_idletasks()
 
         try:
-            self._save_to_history(result, recipient, ttl_preset.label, ttl_preset.seconds)
+            self._save_to_history(result, recipient, ttl_preset.key, ttl_preset.seconds)
         except Exception:
             logger.exception("History-Save fehlgeschlagen.")
 
