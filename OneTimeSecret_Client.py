@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -149,8 +150,16 @@ STRINGS: dict[str, dict[str, str]] = {
                                 "en": "Refreshing {n} entries …"},
     "history.row.status":      {"de": "Status",        "en": "Status"},
     "history.row.link":        {"de": "Status-Link",   "en": "Status link"},
+    "history.row.share":       {"de": "Empfänger-Link", "en": "Recipient link"},
+    "history.copy_share":      {"de": "Empfänger-Link kopiert – er ist nur einmal abrufbar",
+                                "en": "Recipient link copied – it can only be retrieved once"},
+    "history.fetching_share":  {"de": "Hole Empfänger-Link …", "en": "Fetching recipient link …"},
     "history.row.burn":        {"de": "Verbrennen",    "en": "Burn"},
     "history.copy_meta":       {"de": "Status-Link kopiert", "en": "Status link copied"},
+    "history.open_meta":       {"de": "Status-Seite im Browser geöffnet",
+                                "en": "Status page opened in the browser"},
+    "history.open_failed":     {"de": "Browser ließ sich nicht öffnen – Link stattdessen kopiert",
+                                "en": "Could not open a browser – link copied instead"},
     "history.meta.to":         {"de": "an {recipient}", "en": "to {recipient}"},
     "history.meta.ttl":        {"de": "TTL {ttl}",     "en": "TTL {ttl}"},
     "history.meta.checked":    {"de": "geprüft {time}", "en": "checked {time}"},
@@ -251,6 +260,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "error.rejected_field":    {"de": "Eingabe wurde abgelehnt (422) – Feld: {field}.",
                                 "en": "Input was rejected (422) – field: {field}."},
     "error.http":              {"de": "HTTP {code}", "en": "HTTP {code}"},
+    "error.no_share_link":     {"de": "Kein Empfänger-Link mehr verfügbar – das Secret wurde abgerufen, "
+                                      "verbrannt oder ist abgelaufen.",
+                                "en": "No recipient link available any more – the secret was retrieved, "
+                                      "burned or has expired."},
     "error.no_secret_key":     {"de": "Antwort ohne Secret-Key.", "en": "Response contained no secret key."},
     "error.no_metadata_key":   {"de": "Antwort ohne Metadata-Key.", "en": "Response contained no metadata key."},
     "ttl.5m":                  {"de": "5 Min",  "en": "5 min"},
@@ -754,6 +767,44 @@ class OTSClient:
             raise _ots_error("error.no_id")
         data = self._request("GET", f"{self._api_base()}/api/v2/receipt/{identifier}")
         return self._state_from_receipt(data)
+
+    def share_link(self, identifier: str) -> str:
+        """Holt den Empfänger-Link zum Receipt.
+
+        Der Link wird bewusst nicht in der History gespeichert – er ist das
+        Geheimnis selbst, und die History liegt im Klartext auf der Platte. Der
+        Server kennt ihn, solange das Secret noch abrufbar ist."""
+        if not identifier:
+            raise _ots_error("error.no_id")
+        data = self._request("GET", f"{self._api_base()}/api/v2/receipt/{identifier}")
+        record = data.get("record") if isinstance(data.get("record"), dict) else {}
+
+        # Der Server liefert share_path auch für ein verbranntes oder abgerufenes
+        # Secret weiter. Der Zustand entscheidet, nicht das Vorhandensein des Pfads –
+        # sonst landet ein toter Link in der Zwischenablage.
+        if self._state_from_receipt(data) in self.TERMINAL_STATES:
+            raise _ots_error("error.no_share_link")
+
+        link = self._safe_share_url(_first_str(record.get("share_url")))
+        if not link:
+            path = _first_str(record.get("share_path")).lstrip("/")
+            if path:
+                link = f"{self._api_base()}/{path}"
+        if not link:
+            raise _ots_error("error.no_share_link")
+        return link
+
+    @staticmethod
+    def _safe_share_url(url: str) -> str:
+        """Der Link geht in die Zwischenablage – eine Serverantwort darf ihn nicht
+        auf ein anderes Schema oder einen krummen Host umbiegen."""
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not _is_valid_host(parsed.netloc):
+            logger.warning("Ignoring malformed share_url from API response.")
+            return ""
+        return url
 
     def burn(self, identifier: str) -> str:
         """Vernichtet das Secret vor dem Abruf. Der Empfänger-Link wird sofort ungültig.
@@ -2335,10 +2386,15 @@ class App(tk.Tk):
         ).pack(side="left", padx=2)
         FlatButton(
             actions, self.t("history.row.link"),
-            lambda i=entry.metadata_identifier or entry.metadata_key: self._copy_metadata_link(i),
+            lambda i=entry.metadata_identifier or entry.metadata_key: self._open_status_link(i),
             primary=False, font_obj=self.f_caption, padx=12, pady=6,
         ).pack(side="left", padx=2)
         if self._is_burnable(entry.last_state):
+            FlatButton(
+                actions, self.t("history.row.share"),
+                lambda i=entry.metadata_identifier: self._copy_share_link(i),
+                primary=False, font_obj=self.f_caption, padx=12, pady=6,
+            ).pack(side="left", padx=2)
             FlatButton(
                 actions, self.t("history.row.burn"),
                 lambda i=entry.metadata_identifier: self._burn_secret(i),
@@ -2695,17 +2751,56 @@ class App(tk.Tk):
                 ok=False, duration=4000,
             )
 
-    def _copy_metadata_link(self, identifier: str) -> None:
-        """Kopiert die Verwaltungsseite des Secrets – nicht den Empfänger-Link.
-        Wer sie weitergibt, gibt die Möglichkeit weiter, das Secret zu lesen und
-        zu verbrennen."""
+    def _open_status_link(self, identifier: str) -> None:
+        """Öffnet die Verwaltungsseite des Secrets im Browser.
+
+        Das ist nicht der Empfänger-Link: die Seite zeigt den Zustand und erlaubt
+        das Verbrennen – sie zu öffnen verbraucht das Secret nicht."""
         if not identifier:
             return
         url = f"{self.metadata_base}/{identifier}"
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception:
+            logger.exception("Konnte den Browser nicht öffnen.")
+            opened = False
+        if opened:
+            self._show_toast(self.t("history.open_meta"), ok=True)
+            return
+        # Ohne konfigurierten Browser bleibt der Link wenigstens greifbar.
         self.clipboard_clear()
         self.clipboard_append(url)
         self.update_idletasks()
-        self._show_toast(self.t("history.copy_meta"), ok=True)
+        self._show_toast(self.t("history.open_failed"), ok=False, duration=4000)
+
+    def _copy_share_link(self, identifier: str) -> None:
+        if not identifier:
+            self._show_toast(self.t("error.no_id"), ok=False)
+            return
+        self._show_toast(self.t("history.fetching_share"), ok=True, duration=1500)
+        threading.Thread(
+            target=self._copy_share_link_worker, args=(self.client, identifier), daemon=True,
+        ).start()
+
+    def _copy_share_link_worker(self, client: OTSClient, identifier: str) -> None:
+        try:
+            link = client.share_link(identifier)
+        except OTSError as exc:
+            message = self._error_text(exc)
+            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
+            return
+        except Exception as exc:
+            logger.exception("Unerwarteter Fehler beim Holen des Empfänger-Links")
+            message = self.t("error.unexpected", error=exc)
+            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
+            return
+        self.after(0, lambda: self._on_share_link(link))
+
+    def _on_share_link(self, link: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(link)
+        self.update_idletasks()
+        self._show_toast(self.t("history.copy_share"), ok=True, duration=4000)
 
     def _delete_history_entry(self, identifier: str) -> None:
         self.history.remove(identifier)

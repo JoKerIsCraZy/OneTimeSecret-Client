@@ -346,6 +346,55 @@ def test_fetch_status_requires_an_identifier() -> None:
     assert excinfo.value.message_key == "error.no_id"
 
 
+def test_share_link_prefers_the_url_from_the_server() -> None:
+    client = make_client(make_response(200, {"record": {
+        "share_url": "https://eu.onetimesecret.com/secret/SK",
+        "share_path": "secret/SK",
+    }}))
+    assert client.share_link("MID") == "https://eu.onetimesecret.com/secret/SK"
+    assert client._session.calls[0][:2] == ("GET", "https://eu.onetimesecret.com/api/v2/receipt/MID")
+
+
+def test_share_link_falls_back_to_the_path() -> None:
+    """share_url fehlt bei manchen Deployments, share_path ist immer dabei."""
+    client = make_client(make_response(200, {"record": {"share_path": "secret/SK"}}))
+    assert client.share_link("MID") == "https://eu.onetimesecret.com/secret/SK"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["http://evil.example/secret/SK", "javascript:alert(1)", "https://evil example/secret/SK"],
+)
+def test_share_link_rejects_a_malformed_server_url(hostile: str) -> None:
+    """Der Link geht in die Zwischenablage - eine krumme Serverantwort darf ihn
+    nicht umbiegen; dann zaehlt nur der Pfad auf dem konfigurierten Host."""
+    client = make_client(make_response(200, {"record": {"share_url": hostile, "share_path": "secret/SK"}}))
+    assert client.share_link("MID") == "https://eu.onetimesecret.com/secret/SK"
+
+
+@pytest.mark.parametrize("flag", ["is_burned", "is_revealed", "is_expired"])
+def test_share_link_reports_a_consumed_secret(flag: str) -> None:
+    """Der Server gibt share_path auch nach dem Burn noch heraus - der Zustand
+    entscheidet, sonst wandert ein toter Link in die Zwischenablage."""
+    client = make_client(make_response(200, {"record": {flag: True, "share_path": "secret/SK"}}))
+    with pytest.raises(ots.OTSError) as excinfo:
+        client.share_link("MID")
+    assert excinfo.value.message_key == "error.no_share_link"
+
+
+def test_share_link_still_works_for_a_previewed_secret() -> None:
+    """Angesehen, aber nicht abgerufen: der Link ist weiterhin gueltig."""
+    client = make_client(make_response(200, {"record": {"is_previewed": True, "share_path": "secret/SK"}}))
+    assert client.share_link("MID") == "https://eu.onetimesecret.com/secret/SK"
+
+
+def test_share_link_requires_an_identifier() -> None:
+    client = make_client()
+    with pytest.raises(ots.OTSError) as excinfo:
+        client.share_link("")
+    assert excinfo.value.message_key == "error.no_id"
+
+
 def test_burn_posts_and_reports_the_new_state() -> None:
     client = make_client(make_response(200, {"success": True, "record": {"is_burned": True}}))
     assert client.burn("MID") == "burned"

@@ -134,11 +134,43 @@ def test_state_labels_are_localised(app: ots.App) -> None:
     assert label == ots.STRINGS["state.burned"]["en"]
 
 
-def test_the_status_link_points_at_the_v2_receipt_path(app: ots.App) -> None:
+def test_the_status_link_opens_the_v2_receipt_page(
+    app: ots.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """/private/<id> ist die v1-Adresse und liefert auf v2-Servern 404."""
+    opened: list[str] = []
+    monkeypatch.setattr(ots.webbrowser, "open", lambda url, new=0: opened.append(url) or True)
+
     assert app.metadata_base.endswith("/receipt")
-    app._copy_metadata_link("ABC123")
+    app._open_status_link("ABC123")
+    assert opened == ["https://eu.onetimesecret.com/receipt/ABC123"]
+
+
+def test_the_status_link_falls_back_to_the_clipboard(
+    app: ots.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ohne konfigurierten Browser soll der Link nicht einfach verloren gehen."""
+    monkeypatch.setattr(ots.webbrowser, "open", lambda url, new=0: False)
+    app._open_status_link("ABC123")
     assert app.clipboard_get() == "https://eu.onetimesecret.com/receipt/ABC123"
+
+
+def test_the_recipient_link_is_never_persisted(app: ots.App, tmp_path: Path) -> None:
+    """Der Empfaenger-Link ist das Geheimnis selbst - er wird beim Klick vom
+    Server geholt, nicht in history.json abgelegt."""
+    assert "secret_key" not in ots.HistoryEntry.__dataclass_fields__
+    app.history.add(ots.HistoryEntry(
+        created_at="2026-01-01T10:00:00+00:00", recipient=None, ttl_label="7d",
+        ttl_seconds=604800, metadata_key="MK", metadata_identifier="MID",
+        secret_preview="abc1234", last_state=ots.STATE_NEW, last_checked="",
+    ))
+    on_disk = (tmp_path / "OneTimeSecret" / "history.json").read_text(encoding="utf-8")
+    assert "/secret/" not in on_disk
+
+
+def test_the_recipient_link_lands_on_the_clipboard(app: ots.App) -> None:
+    app._on_share_link("https://eu.onetimesecret.com/secret/SK")
+    assert app.clipboard_get() == "https://eu.onetimesecret.com/secret/SK"
 
 
 def test_burnable_states(app: ots.App) -> None:
