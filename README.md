@@ -8,10 +8,12 @@
 Encrypted messages · single-use · self-destructing.
 
 [![Build](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/build.yml/badge.svg)](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/build.yml)
+[![Tests](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/tests.yml/badge.svg)](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/tests.yml)
 [![Lint](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/lint.yml/badge.svg)](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/lint.yml)
 [![CodeQL](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/codeql.yml/badge.svg)](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/JoKerIsCraZy/OneTimeSecret-Client?color=22d3ee&label=release)](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/releases)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776ab.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-22d3ee.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d6.svg)](#)
 
 </div>
@@ -32,7 +34,7 @@ The API key is stored in the **Windows Credential Manager** (DPAPI-encrypted) vi
 - **Burn** — Revoke a secret before it is read, via `POST /api/v2/receipt/<id>/burn`; the recipient link dies instantly
 - **Connection test** — Check server reachability, version and credentials from the settings panel (`GET /api/v2/status`, `/version`, `/receipt/recent`)
 - **Multi-region** — EU, Global, US, UK, CA, NZ, or a custom host
-- **i18n** — English (default) and German, switchable at runtime
+- **i18n** — English (default) and German, switchable at runtime; API error messages are localised too
 - **Settings panel** — In-app config for credentials, region, default TTL, network timeout
 - **Secure storage** — API key in Windows Credential Manager (DPAPI), settings in `%APPDATA%\OneTimeSecret\`
 - **Modern UI** — "Vault" theme: deep-navy + cyan, sidebar nav, custom thin scrollbars
@@ -75,6 +77,20 @@ All settings are managed in the in-app **Settings** panel. Nothing is hardcoded.
 
 > Get an API key at [eu.onetimesecret.com/account](https://eu.onetimesecret.com/account) (or your chosen region).
 
+## Development
+
+```powershell
+pip install -r requirements-dev.txt
+
+python -m pytest        # test suite
+python -m ruff check .  # lint
+```
+
+The tests never touch the network or your real config directory - the HTTP session is
+replaced by a double and the stores are pointed at a temp directory. The Tk smoke tests
+in `test_app.py` build the real window (hidden) and skip themselves where no display is
+available.
+
 ## Build the `.exe` locally
 
 ```powershell
@@ -92,7 +108,8 @@ For tagged releases, the `release.yml` workflow builds, versions, and publishes 
 | `build.yml`             | Push / PR to `main`           | Compile sanity + PyInstaller build (artifact)          |
 | `release-drafter.yml`   | Push to `main` + PR events    | Maintain a draft release with auto-categorised changelog; auto-label PRs by title prefix |
 | `release.yml`           | Tag `v*.*.*` or manual        | Build the `.exe` and attach it to the GitHub Release   |
-| `lint.yml`              | Push / PR                     | Ruff lint + format check (advisory)                    |
+| `tests.yml`             | Push / PR to `main`           | pytest on Windows (API layer, storage, i18n, GUI smoke)|
+| `lint.yml`              | Push / PR                     | Ruff lint + format check                               |
 | `codeql.yml`            | Push / PR + weekly cron       | Security & quality scanning                            |
 | `dependabot.yml`        | Weekly                        | Grouped dependency updates with rebase strategy        |
 
@@ -109,9 +126,17 @@ Manual tagging still works (`git tag v1.2.3 && git push origin v1.2.3`) and bypa
 
 ```
 OneTimeSecret-Client/
-├── OneTimeSecret_Client.py            # Single-file Tkinter app (~1.7k lines)
+├── OneTimeSecret_Client.py            # Single-file Tkinter app (~2.6k lines)
 ├── requirements.txt                   # requests, keyring
+├── requirements-dev.txt               # + pytest, ruff
+├── pyproject.toml                     # Ruff + pytest configuration
 ├── build.bat                          # Local PyInstaller build
+├── tests/                             # pytest suite (no network, no real config touched)
+│   ├── test_client.py                 # transport, error envelope, response mapping
+│   ├── test_storage.py                # history + settings persistence
+│   ├── test_i18n.py                   # translation completeness
+│   ├── test_helpers.py                # regions, TTL keys, text utils
+│   └── test_app.py                    # Tk smoke tests (skipped without a display)
 ├── assets/
 │   ├── onetime.ico                    # App icon (multi-res, 16-256)
 │   ├── onetime_preview.png            # 512px preview / README header
@@ -136,8 +161,13 @@ OneTimeSecret-Client/
 
 - No credentials in source code
 - API key encrypted at rest via Windows DPAPI (per-user)
-- HTTPS-only requests; configurable timeout
+- HTTPS-only requests — a plain `http://` API URL is refused before the request leaves
+  the process (loopback excepted, for self-hosted instances); configurable timeout
+- The share domain returned by the server is validated as a bare host before it is used
+  to build the recipient link
 - Status checked via API, never by opening the recipient link (which would consume it)
+- `history.json` holds receipt identifiers (which permit burning a secret), never the
+  secret itself — treat the file as sensitive
 
 If you find a security issue, please open a private [security advisory](https://github.com/JoKerIsCraZy/OneTimeSecret-Client/security/advisories/new) instead of a public issue.
 
@@ -147,7 +177,7 @@ Issues and pull requests are welcome. See [`PULL_REQUEST_TEMPLATE.md`](.github/P
 
 ## License
 
-Not yet licensed. Until a license file is added, all rights reserved by the author.
+[MIT](LICENSE).
 
 ---
 
