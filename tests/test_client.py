@@ -104,6 +104,29 @@ def test_request_normalises_a_non_object_json_body() -> None:
     assert client._request("GET", "https://eu.onetimesecret.com/api/v2/status") == {}
 
 
+def test_request_rejects_credentials_that_cannot_be_sent() -> None:
+    """Ein aus einer Tabelle kopierter API-Key schleppt gern ein Rahmenzeichen mit.
+    requests wuerde daran erst tief im Stack mit einem UnicodeEncodeError sterben."""
+    client = make_client(key="x" * 54 + "│" + "y")
+    with pytest.raises(ots.OTSError) as excinfo:
+        client._request("GET", "https://eu.onetimesecret.com/api/v2/receipt/abc")
+    assert excinfo.value.message_key == "error.credentials_charset"
+    assert client._session.calls == []
+
+
+def test_request_rejects_a_non_latin1_user() -> None:
+    client = make_client(user="│me@example.org")
+    with pytest.raises(ots.OTSError) as excinfo:
+        client._request("GET", "https://eu.onetimesecret.com/api/v2/receipt/abc")
+    assert excinfo.value.message_key == "error.credentials_charset"
+
+
+def test_accented_credentials_still_go_through() -> None:
+    """latin-1 deckt Umlaute ab - die duerfen nicht mit abgelehnt werden."""
+    client = make_client(make_response(200, {"ok": True}), user="jörg@example.org", key="schlüssel")
+    assert client._request("GET", "https://eu.onetimesecret.com/api/v2/status") == {"ok": True}
+
+
 def test_request_refuses_plain_http() -> None:
     """README verspricht HTTPS-only – eine http-URL aus den Settings darf nicht rausgehen."""
     client = ots.OTSClient("http://eu.onetimesecret.com/api/v2/secret/conceal", "me", "key")

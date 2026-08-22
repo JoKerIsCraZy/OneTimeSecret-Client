@@ -224,6 +224,12 @@ STRINGS: dict[str, dict[str, str]] = {
     "error.unexpected":        {"de": "Unerwarteter Fehler: {error}",
                                 "en": "Unexpected error: {error}"},
     "error.no_id":             {"de": "Kein Identifier vorhanden.", "en": "No identifier available."},
+    "error.credentials_charset": {"de": "E-Mail oder API-Key enthält Zeichen, die nicht übertragen werden "
+                                       "können – beim Kopieren aus einer Tabelle rutscht leicht ein "
+                                       "Rahmenzeichen mit hinein. Bitte in den Einstellungen neu eingeben.",
+                                 "en": "Email or API key contains characters that cannot be transmitted – "
+                                       "copying from a table easily drags a border character along. "
+                                       "Please re-enter them in the settings."},
     "error.insecure_url":      {"de": "Unverschlüsselte Verbindung abgelehnt – die API-URL muss mit https:// beginnen.",
                                 "en": "Refusing an unencrypted connection – the API URL must start with https://."},
     "error.invalid_json":      {"de": "API-Antwort war kein gültiges JSON.",
@@ -581,6 +587,20 @@ class OTSClient:
             return
         raise _ots_error("error.insecure_url")
 
+    def _ensure_credentials_transmittable(self) -> None:
+        """Basic Auth geht als latin-1-kodierter Header raus.
+
+        Ein aus einer Tabelle kopierter Key – etwa mit einem Rahmenzeichen wie │ –
+        ließe requests tief im Stack mit einem UnicodeEncodeError scheitern, den der
+        Nutzer als "Unerwarteter Fehler: 'latin-1' codec can't encode character"
+        vorgesetzt bekäme. Hier gibt es stattdessen eine Meldung, die sagt, was zu
+        tun ist."""
+        for value in (self.user, self.key):
+            try:
+                value.encode("latin-1")
+            except UnicodeEncodeError as exc:
+                raise _ots_error("error.credentials_charset") from exc
+
     def _api_base(self) -> str:
         parsed = urlparse(self.url)
         return f"{parsed.scheme}://{parsed.netloc}"
@@ -600,6 +620,7 @@ class OTSClient:
         if require_auth and not self.has_credentials:
             raise _ots_error("error.api_config", error_type=MISSING_CONFIG)
         self._ensure_secure(url)
+        self._ensure_credentials_transmittable()
 
         with self._lifecycle:
             self._inflight += 1
@@ -613,6 +634,11 @@ class OTSClient:
         except requests.RequestException as exc:
             logger.exception("OneTimeSecret API request failed (%s %s)", method, url)
             raise _ots_error("error.network", error=exc) from exc
+        except UnicodeEncodeError as exc:
+            # Sollte die Vorprüfung nicht greifen: nicht als "unerwarteter Fehler"
+            # durchreichen, der Nutzer kann damit nichts anfangen.
+            logger.error("Request could not be encoded (%s %s): %s", method, url, exc)
+            raise _ots_error("error.credentials_charset") from exc
         finally:
             self._release()
 
@@ -2060,7 +2086,7 @@ class App(tk.Tk):
         self.test_btn = FlatButton(
             actions, self.t("settings.test"),
             on_click=lambda: self._test_connection(
-                url_var.get().strip(), user_var.get().strip(), key_var.get(),
+                url_var.get().strip(), user_var.get().strip(), key_var.get().strip(),
             ),
             primary=False, font_obj=self.f_button, padx=18, pady=11,
         )
@@ -2071,7 +2097,7 @@ class App(tk.Tk):
             on_click=lambda: self._save_settings(
                 url_var.get().strip(),
                 user_var.get().strip(),
-                key_var.get(),
+                key_var.get().strip(),
                 region_var.get(),
                 lang_var.get(),
                 timeout_var.get().strip(),
