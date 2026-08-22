@@ -28,3 +28,7 @@ Thumbs.db
 # App-Daten (lokale Settings & History – sollen nie in Git landen)
 settings.json
 history.json
+
+# Impeccable-Designnotizen (lokal, nicht Teil des Repos)
+PRODUCT.md
+DESIGN.md
