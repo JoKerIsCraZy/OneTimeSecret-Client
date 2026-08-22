@@ -134,6 +134,13 @@ def test_state_labels_are_localised(app: ots.App) -> None:
     assert label == ots.STRINGS["state.burned"]["en"]
 
 
+def test_the_status_link_points_at_the_v2_receipt_path(app: ots.App) -> None:
+    """/private/<id> ist die v1-Adresse und liefert auf v2-Servern 404."""
+    assert app.metadata_base.endswith("/receipt")
+    app._copy_metadata_link("ABC123")
+    assert app.clipboard_get() == "https://eu.onetimesecret.com/receipt/ABC123"
+
+
 def test_burnable_states(app: ots.App) -> None:
     assert app._is_burnable(ots.STATE_NEW) is True
     assert app._is_burnable("shared") is True

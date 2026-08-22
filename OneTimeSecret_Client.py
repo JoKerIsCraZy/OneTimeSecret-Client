@@ -148,7 +148,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "history.refreshing":      {"de": "Aktualisiere {n} Einträge …",
                                 "en": "Refreshing {n} entries …"},
     "history.row.status":      {"de": "Status",        "en": "Status"},
-    "history.row.link":        {"de": "Link",          "en": "Link"},
+    "history.row.link":        {"de": "Status-Link",   "en": "Status link"},
     "history.row.burn":        {"de": "Verbrennen",    "en": "Burn"},
     "history.copy_meta":       {"de": "Status-Link kopiert", "en": "Status link copied"},
     "history.meta.to":         {"de": "an {recipient}", "en": "to {recipient}"},
@@ -232,6 +232,8 @@ STRINGS: dict[str, dict[str, str]] = {
                                        "Please re-enter them in the settings."},
     "error.insecure_url":      {"de": "Unverschlüsselte Verbindung abgelehnt – die API-URL muss mit https:// beginnen.",
                                 "en": "Refusing an unencrypted connection – the API URL must start with https://."},
+    "error.refused":           {"de": "Der Server hat den Vorgang abgelehnt.",
+                                "en": "The server refused the operation."},
     "error.invalid_json":      {"de": "API-Antwort war kein gültiges JSON.",
                                 "en": "API response was not valid JSON."},
     "error.auth":              {"de": "Zugangsdaten abgelehnt – E-Mail und API-Key prüfen.",
@@ -499,6 +501,9 @@ def _flag(value: object) -> bool:
 class OTSClient:
     """Dünner Wrapper um die OneTimeSecret API v2 (Basic Auth, JSON)."""
 
+    # Zustände, aus denen ein Secret nicht mehr herauskommt.
+    TERMINAL_STATES: frozenset[str] = frozenset({"burned", "revealed", "expired", "orphaned", "received"})
+
     # Reihenfolge = Priorität: terminale Zustände zuerst.
     _STATE_FLAGS: tuple[tuple[str, str], ...] = (
         ("burned", "is_burned"),
@@ -649,7 +654,18 @@ class OTSClient:
             data = response.json()
         except ValueError as exc:
             raise _ots_error("error.invalid_json") from exc
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+
+        # v2 meldet einen abgelehnten Vorgang nicht über den Statuscode, sondern
+        # über `success` im Body: ein Burn ohne `continue` etwa kommt als HTTP 200
+        # mit success=false zurück, ohne dass etwas passiert wäre. Endpunkte ohne
+        # dieses Feld (/status, /version) bleiben davon unberührt.
+        if data.get("success") is False:
+            detail = _first_str(data.get("error"), data.get("message"))
+            logger.error("API refused the operation (%s %s): %s", method, url, detail or "-")
+            raise _ots_error("error.refused", detail=detail)
+        return data
 
     @staticmethod
     def _error_from_response(response: requests.Response) -> OTSError:
@@ -740,15 +756,22 @@ class OTSClient:
         return self._state_from_receipt(data)
 
     def burn(self, identifier: str) -> str:
-        """Vernichtet das Secret vor dem Abruf. Der Empfänger-Link wird sofort ungültig."""
+        """Vernichtet das Secret vor dem Abruf. Der Empfänger-Link wird sofort ungültig.
+
+        `continue` ist im OpenAPI-Spec nur ein optionales Feld, in Wahrheit aber die
+        Bestätigung, ohne die der Server den Burn nicht ausführt: er antwortet dann
+        mit HTTP 200 und success=false, und das Secret bleibt abrufbar."""
         if not identifier:
             raise _ots_error("error.no_id")
         data = self._request(
             "POST", f"{self._api_base()}/api/v2/receipt/{identifier}/burn",
-            json_body={},
+            json_body={"continue": "true"},
         )
+        # Die Antwort trägt den Datensatz von *vor* dem Burn (state bleibt "new",
+        # is_burned false); erst der nächste GET zeigt den neuen Zustand. Nachdem
+        # `_request` success=false bereits abgefangen hat, ist hier verbrannt.
         state = self._state_from_receipt(data)
-        return state if state != "unknown" else "burned"
+        return state if state in self.TERMINAL_STATES else "burned"
 
     def ping(self) -> ServiceInfo:
         """Erreichbarkeit über die auth-freien Endpoints, Credentials über /receipt/recent."""
@@ -1501,7 +1524,8 @@ class App(tk.Tk):
         self.lang = settings.language if settings.language in known_languages else DEFAULT_LANGUAGE
         self.api_host = urlparse(settings.api_url).hostname or "onetimesecret.com"
         self.link_base = f"https://{self.api_host}/secret"
-        self.metadata_base = f"https://{self.api_host}/private"
+        # /private/<id> ist die v1-Adresse und antwortet auf v2-Servern mit 404.
+        self.metadata_base = f"https://{self.api_host}/receipt"
 
         # __dict__ statt getattr: tk.Tk bringt selbst eine Methode `client` mit,
         # die getattr sonst als "vorheriger Client" zurückgibt.
@@ -2311,7 +2335,7 @@ class App(tk.Tk):
         ).pack(side="left", padx=2)
         FlatButton(
             actions, self.t("history.row.link"),
-            lambda k=entry.metadata_key: self._copy_metadata_link(k),
+            lambda i=entry.metadata_identifier or entry.metadata_key: self._copy_metadata_link(i),
             primary=False, font_obj=self.f_caption, padx=12, pady=6,
         ).pack(side="left", padx=2)
         if self._is_burnable(entry.last_state):
@@ -2486,10 +2510,8 @@ class App(tk.Tk):
 
     # ---- Burn ----
 
-    TERMINAL_STATES = frozenset({"burned", "revealed", "expired", "orphaned"})
-
     def _is_burnable(self, state: str) -> bool:
-        return (state or "").lower() not in self.TERMINAL_STATES
+        return (state or "").lower() not in OTSClient.TERMINAL_STATES
 
     def _burn_last_secret(self) -> None:
         identifier = self._last_metadata_identifier
@@ -2673,10 +2695,13 @@ class App(tk.Tk):
                 ok=False, duration=4000,
             )
 
-    def _copy_metadata_link(self, metadata_key: str) -> None:
-        if not metadata_key:
+    def _copy_metadata_link(self, identifier: str) -> None:
+        """Kopiert die Verwaltungsseite des Secrets – nicht den Empfänger-Link.
+        Wer sie weitergibt, gibt die Möglichkeit weiter, das Secret zu lesen und
+        zu verbrennen."""
+        if not identifier:
             return
-        url = f"{self.metadata_base}/{metadata_key}"
+        url = f"{self.metadata_base}/{identifier}"
         self.clipboard_clear()
         self.clipboard_append(url)
         self.update_idletasks()

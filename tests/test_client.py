@@ -301,7 +301,8 @@ def test_share_result_accepts_a_host_with_a_port() -> None:
 
 def test_share_posts_the_conceal_envelope() -> None:
     client = make_client(make_response(200, {
-        "record": {"secret": {"key": "SK"}, "receipt": {"key": "MK", "identifier": "MID"}}
+        "success": True,
+        "record": {"secret": {"key": "SK"}, "receipt": {"key": "MK", "identifier": "MID"}},
     }))
     result = client.share("hello", 3600, recipient="you@example.org")
     method, url, kwargs = client._session.calls[0]
@@ -346,15 +347,60 @@ def test_fetch_status_requires_an_identifier() -> None:
 
 
 def test_burn_posts_and_reports_the_new_state() -> None:
-    client = make_client(make_response(200, {"record": {"is_burned": True}}))
+    client = make_client(make_response(200, {"success": True, "record": {"is_burned": True}}))
     assert client.burn("MID") == "burned"
     method, url, _kwargs = client._session.calls[0]
     assert (method, url) == ("POST", "https://eu.onetimesecret.com/api/v2/receipt/MID/burn")
 
 
+def test_burn_sends_the_continue_flag() -> None:
+    """Ohne `continue` fuehrt der Server den Burn nicht aus: er antwortet mit
+    HTTP 200 und success=false, und das Secret bleibt abrufbar."""
+    client = make_client(make_response(200, {"success": True, "record": {"is_burned": True}}))
+    client.burn("MID")
+    assert client._session.calls[0][2]["json"] == {"continue": "true"}
+
+
+def test_burn_reports_a_refused_burn_as_an_error() -> None:
+    """success=false bei HTTP 200 - der haeufigste Weg, wie ein Burn stillschweigend
+    nicht stattfindet."""
+    client = make_client(make_response(200, {"success": False, "record": {"state": "new"}}))
+    with pytest.raises(ots.OTSError) as excinfo:
+        client.burn("MID")
+    assert excinfo.value.message_key == "error.refused"
+
+
+def test_burn_trusts_success_over_a_stale_record() -> None:
+    """Die Burn-Antwort traegt den Datensatz von vor dem Burn: state bleibt 'new'
+    und is_burned false. Erst der naechste GET zeigt is_burned=true."""
+    client = make_client(make_response(200, {
+        "success": True,
+        "record": {"state": "new", "secret_state": None, "is_burned": False},
+    }))
+    assert client.burn("MID") == "burned"
+
+
+def test_burn_keeps_a_terminal_state_from_the_response() -> None:
+    client = make_client(make_response(200, {"success": True, "record": {"is_revealed": True}}))
+    assert client.burn("MID") == "revealed"
+
+
 def test_burn_assumes_burned_when_the_server_stays_vague() -> None:
     client = make_client(make_response(200, {}))
     assert client.burn("MID") == "burned"
+
+
+def test_request_rejects_an_envelope_that_reports_failure() -> None:
+    client = make_client(make_response(200, {"success": False}))
+    with pytest.raises(ots.OTSError) as excinfo:
+        client._request("POST", "https://eu.onetimesecret.com/api/v2/receipt/MID/burn")
+    assert excinfo.value.message_key == "error.refused"
+
+
+def test_request_accepts_an_envelope_without_a_success_flag() -> None:
+    """/status und /version antworten ohne success-Feld - das ist kein Fehler."""
+    client = make_client(make_response(200, {"status": "nominal"}))
+    assert client._request("GET", "https://eu.onetimesecret.com/api/v2/status") == {"status": "nominal"}
 
 
 def test_ping_reports_version_and_authentication() -> None:
