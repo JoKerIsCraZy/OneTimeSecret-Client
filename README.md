@@ -26,18 +26,28 @@ A native Tkinter GUI built on the OneTimeSecret **v2 API**. Send encrypted, sing
 
 The API key is stored in the **Windows Credential Manager** (DPAPI-encrypted) via [`keyring`](https://pypi.org/project/keyring/). No secrets in source, no plaintext on disk.
 
+## Preview
+
+![Send view](assets/screenshots/send.png)
+
+| History | Settings |
+| :-- | :-- |
+| ![History](assets/screenshots/history.png) | ![Settings](assets/screenshots/settings.png) |
+
 ## Features
 
 - **Send** — Compose and conceal secrets with TTL presets (5 min … 14 days)
+- **Passphrase** — Optionally require a second factor the recipient must know on top of the link
 - **History** — Track every secret you create, with live state polling (`waiting / shared / retrieved / burned / expired`)
 - **Status check** — Verify whether a recipient has opened the link, via `GET /api/v2/receipt/<id>`
 - **Burn** — Revoke a secret before it is read, via `POST /api/v2/receipt/<id>/burn`; the recipient link dies instantly
+- **Recipient link on demand** — Fetch a link again later from the server; it is never written to disk
 - **Connection test** — Check server reachability, version and credentials from the settings panel (`GET /api/v2/status`, `/version`, `/receipt/recent`)
 - **Multi-region** — EU, Global, US, UK, CA, NZ, or a custom host
 - **i18n** — English (default) and German, switchable at runtime; API error messages are localised too
 - **Settings panel** — In-app config for credentials, region, default TTL, network timeout
 - **Secure storage** — API key in Windows Credential Manager (DPAPI), settings in `%APPDATA%\OneTimeSecret\`
-- **Modern UI** — "Vault" theme: deep-navy + cyan, sidebar nav, custom thin scrollbars
+- **Native look** — Built in the Windows design language (Fluent, dark): system icon font, drawn controls with real focus rings, full keyboard operation
 - **Single-file `.exe`** — Built with PyInstaller, no Python install required on the target machine
 
 ## Quick start
@@ -140,7 +150,8 @@ OneTimeSecret-Client/
 ├── assets/
 │   ├── onetime.ico                    # App icon (multi-res, 16-256)
 │   ├── onetime_preview.png            # 512px preview / README header
-│   └── generate_icon.py               # Reproducible icon generator (Pillow)
+│   ├── generate_icon.py               # Reproducible icon generator (Pillow)
+│   └── screenshots/                   # README preview images
 └── .github/
     ├── workflows/                     # build, release, release-drafter, lint, codeql
     ├── release-drafter.yml            # Categories, version-resolver, autolabeler config
@@ -151,7 +162,7 @@ OneTimeSecret-Client/
 
 ## Tech stack
 
-- **Python 3.12** · **Tkinter / ttk** for the GUI
+- **Python 3.12** · **Tkinter** for the GUI, in the Windows design language (Fluent, dark)
 - **requests** for HTTP, **keyring** for DPAPI-backed credential storage
 - **OneTimeSecret v2 REST API** (Basic Auth + JSON)
 - **PyInstaller** for `--onefile --windowed` builds
