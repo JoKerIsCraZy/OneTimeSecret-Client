@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -16,8 +17,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tkinter import font as tkfont
-from tkinter import messagebox, ttk
-from typing import NamedTuple, Optional
+from tkinter import messagebox
+from typing import ClassVar, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -94,22 +95,15 @@ def build_api_url(region: str, custom_url: str = "") -> str:
 
 # ---- Übersetzungen (DE / EN) ----
 STRINGS: dict[str, dict[str, str]] = {
-    "app.subtitle":            {"de": "Verschlüsselte Nachrichten · einmal sichtbar · selbstzerstörend.",
-                                "en": "Encrypted messages · single-use · self-destructing."},
     "nav.send":                {"de": "Senden",        "en": "Send"},
     "nav.history":             {"de": "Verlauf",       "en": "History"},
     "nav.settings":            {"de": "Einstellungen", "en": "Settings"},
-    "sidebar.workspace":       {"de": "WORKSPACE",     "en": "WORKSPACE"},
-    "sidebar.region":          {"de": "REGION",        "en": "REGION"},
-    "sidebar.api":             {"de": "API",           "en": "API"},
-    "sidebar.account":         {"de": "ACCOUNT",       "en": "ACCOUNT"},
-    "send.eyebrow":            {"de": "NEUES SECRET",  "en": "NEW SECRET"},
     "send.title":              {"de": "Einmal-Link erstellen",
                                 "en": "Create one-time link"},
     "send.subtitle":           {"de": "Einmal abrufbar · nach Abruf oder Ablauf der TTL automatisch gelöscht.",
                                 "en": "Single-use · auto-deleted after retrieval or TTL expiration."},
     "send.recipient":          {"de": "Empfänger",     "en": "Recipient"},
-    "send.optional":           {"de": "OPTIONAL",      "en": "OPTIONAL"},
+    "send.optional":           {"de": "(optional)",   "en": "(optional)"},
     "send.message":            {"de": "Nachricht",     "en": "Message"},
     "send.ttl":                {"de": "Gültigkeit",    "en": "Lifetime"},
     "send.create":             {"de": "Erzeugen",      "en": "Create"},
@@ -120,10 +114,9 @@ STRINGS: dict[str, dict[str, str]] = {
     "result.title":            {"de": "Link erzeugt",  "en": "Link created"},
     "result.subtitle":         {"de": "Bereits in der Zwischenablage.",
                                 "en": "Already on your clipboard."},
-    "result.link_label":       {"de": "EMPFÄNGER-LINK","en": "RECIPIENT LINK"},
+    "result.link_label":       {"de": "Empfänger-Link", "en": "Recipient link"},
     "result.copy":             {"de": "Kopieren",      "en": "Copy"},
     "result.copied":           {"de": "Link kopiert ✓","en": "Link copied ✓"},
-    "result.status_label":     {"de": "STATUS",        "en": "STATUS"},
     "result.status_check":     {"de": "Status prüfen", "en": "Check status"},
     "result.status_waiting":   {"de": "noch nicht abgerufen", "en": "not retrieved yet"},
     "result.status_history":   {"de": "siehe Verlauf", "en": "see history"},
@@ -134,7 +127,6 @@ STRINGS: dict[str, dict[str, str]] = {
     "result.new":              {"de": "Neue Nachricht senden", "en": "Send new message"},
     "result.no_status":        {"de": "Kein Status-Identifier vorhanden.",
                                 "en": "No status identifier available."},
-    "history.eyebrow":         {"de": "VERLAUF",       "en": "HISTORY"},
     "history.title":           {"de": "Erzeugte Secrets", "en": "Created secrets"},
     "history.count_one":       {"de": "{n} Eintrag",   "en": "{n} entry"},
     "history.count_many":      {"de": "{n} Einträge",  "en": "{n} entries"},
@@ -149,13 +141,11 @@ STRINGS: dict[str, dict[str, str]] = {
     "history.refreshing":      {"de": "Aktualisiere {n} Einträge …",
                                 "en": "Refreshing {n} entries …"},
     "history.row.status":      {"de": "Status",        "en": "Status"},
-    "history.row.link":        {"de": "Status-Link",   "en": "Status link"},
     "history.row.share":       {"de": "Empfänger-Link", "en": "Recipient link"},
     "history.copy_share":      {"de": "Empfänger-Link kopiert – er ist nur einmal abrufbar",
                                 "en": "Recipient link copied – it can only be retrieved once"},
     "history.fetching_share":  {"de": "Hole Empfänger-Link …", "en": "Fetching recipient link …"},
     "history.row.burn":        {"de": "Verbrennen",    "en": "Burn"},
-    "history.copy_meta":       {"de": "Status-Link kopiert", "en": "Status link copied"},
     "history.open_meta":       {"de": "Status-Seite im Browser geöffnet",
                                 "en": "Status page opened in the browser"},
     "history.open_failed":     {"de": "Browser ließ sich nicht öffnen – Link stattdessen kopiert",
@@ -176,20 +166,18 @@ STRINGS: dict[str, dict[str, str]] = {
     "burn.failed":             {"de": "Verbrennen fehlgeschlagen: {error}",
                                 "en": "Burn failed: {error}"},
     "burn.busy":               {"de": "Verbrenne …",   "en": "Burning …"},
-    "settings.eyebrow":        {"de": "EINSTELLUNGEN", "en": "SETTINGS"},
     "settings.title":          {"de": "API & Konfiguration", "en": "API & Configuration"},
     "settings.subtitle":       {"de": "Zugangsdaten, Region und Sprache anpassen.",
                                 "en": "Configure credentials, region and language."},
-    "settings.region":         {"de": "REGION",        "en": "REGION"},
-    "settings.url":            {"de": "API-URL",       "en": "API URL"},
-    "settings.user":           {"de": "BENUTZER (E-MAIL)", "en": "USER (EMAIL)"},
-    "settings.key":            {"de": "API-KEY",       "en": "API KEY"},
+    "settings.region":         {"de": "Region",       "en": "Region"},
+    "settings.url":            {"de": "API-URL",      "en": "API URL"},
+    "settings.user":           {"de": "E-Mail-Adresse", "en": "Email address"},
+    "settings.key":            {"de": "API-Key",      "en": "API key"},
     "settings.show":           {"de": "Anzeigen",      "en": "Show"},
     "settings.hide":           {"de": "Verbergen",     "en": "Hide"},
-    "settings.advanced":       {"de": "ERWEITERT",     "en": "ADVANCED"},
-    "settings.timeout":        {"de": "TIMEOUT (SEKUNDEN)", "en": "TIMEOUT (SECONDS)"},
-    "settings.default_ttl":    {"de": "STANDARD-GÜLTIGKEIT", "en": "DEFAULT LIFETIME"},
-    "settings.language":       {"de": "SPRACHE",       "en": "LANGUAGE"},
+    "settings.timeout":        {"de": "Zeitüberschreitung", "en": "Timeout"},
+    "settings.default_ttl":    {"de": "Standard-Gültigkeit", "en": "Default lifetime"},
+    "settings.language":       {"de": "Sprache",      "en": "Language"},
     "settings.test":           {"de": "Verbindung testen", "en": "Test connection"},
     "settings.reset":          {"de": "Zurücksetzen",  "en": "Reset"},
     "settings.save":           {"de": "Speichern",     "en": "Save"},
@@ -205,7 +193,6 @@ STRINGS: dict[str, dict[str, str]] = {
                                       "credential manager – it only applies to this session."},
     "settings.reset_done":     {"de": "Auf Standard zurückgesetzt", "en": "Reset to defaults"},
     "settings.testing":        {"de": "Teste …",       "en": "Testing …"},
-    "settings.test_ok":        {"de": "Verbindung OK", "en": "Connection OK"},
     "settings.test_ok_full":   {"de": "Verbindung & Login OK · Server {version} ({status})",
                                 "en": "Connection & login OK · server {version} ({status})"},
     "settings.test_ok_anon":   {"de": "Server erreichbar ({version}) – keine Zugangsdaten hinterlegt",
@@ -266,6 +253,31 @@ STRINGS: dict[str, dict[str, str]] = {
                                       "burned or has expired."},
     "error.no_secret_key":     {"de": "Antwort ohne Secret-Key.", "en": "Response contained no secret key."},
     "error.no_metadata_key":   {"de": "Antwort ohne Metadata-Key.", "en": "Response contained no metadata key."},
+    "nav.no_account":          {"de": "Kein Konto hinterlegt", "en": "No account configured"},
+    "send.passphrase":         {"de": "Passphrase",   "en": "Passphrase"},
+    "send.passphrase_hint":    {"de": "Der Empfänger braucht sie zusätzlich zum Link – schick sie auf "
+                                      "einem anderen Weg, sonst ist der zweite Kanal wirkungslos.",
+                                "en": "The recipient needs it on top of the link – send it through a "
+                                      "different channel, otherwise the second factor is pointless."},
+    "result.passphrase_note":  {"de": "Mit Passphrase geschützt. Ohne sie kann der Empfänger die "
+                                      "Nachricht nicht öffnen.",
+                                "en": "Protected with a passphrase. Without it the recipient cannot "
+                                      "open the message."},
+    "history.row.page":        {"de": "Statusseite",  "en": "Status page"},
+    "history.meta.passphrase": {"de": "mit Passphrase", "en": "passphrase set"},
+    "history.empty_action":    {"de": "Erstes Secret erzeugen", "en": "Create your first secret"},
+    "history.state_now":       {"de": "Zustand: {state}", "en": "State: {state}"},
+    "history.refresh_ok":      {"de": "{n} Einträge aktualisiert", "en": "{n} entries refreshed"},
+    "history.clear_confirm":   {"de": "Der lokale Verlauf wird gelöscht. Die Secrets selbst bleiben "
+                                      "davon unberührt.\n\nFortfahren?",
+                                "en": "The local history will be deleted. The secrets themselves are "
+                                      "not affected.\n\nContinue?"},
+    "settings.reset_confirm":  {"de": "Alle Einstellungen werden auf die Vorgaben zurückgesetzt und "
+                                      "der hinterlegte API-Key entfernt.\n\nFortfahren?",
+                                "en": "All settings return to their defaults and the stored API key "
+                                      "is removed.\n\nContinue?"},
+    "settings.timeout_hint":   {"de": "Sekunden, die auf eine Antwort des Servers gewartet wird.",
+                                "en": "Seconds to wait for a response from the server."},
     "ttl.5m":                  {"de": "5 Min",  "en": "5 min"},
     "ttl.30m":                 {"de": "30 Min", "en": "30 min"},
     "ttl.1h":                  {"de": "1 Std",  "en": "1 hr"},
@@ -347,53 +359,92 @@ def resolve_ttl_key(value: str) -> str:
         return value
     return LEGACY_TTL_LABELS.get(value, DEFAULT_TTL_KEY)
 
-
 # ============================================================
-# Theme – "Vault" (refined enterprise dark)
+# Theme – Windows 11 (Fluent), dunkel
 # ============================================================
 
 class Theme:
-    # Surfaces
-    BG       = "#0b0d13"
-    SIDEBAR  = "#0f1219"
-    SURFACE  = "#13161f"
-    CARD     = "#1a1e2a"
-    RAISED   = "#212636"
-    INPUT_BG = "#0d1018"
+    """Fluent-Dunkeldesign in Volltonwerten.
 
-    # Borders
-    BORDER        = "#242937"
-    BORDER_STRONG = "#2f3548"
-    BORDER_FOCUS  = "#3d5a80"
-    DIVIDER       = "#1c2030"
+    Fluent legt seine Ebenen als Weiß mit niedriger Deckkraft über den Grund
+    (`#FFFFFF0A` und ähnlich). Tk kennt keine Deckkraft auf Widgets, deshalb sind
+    die Ebenen hier einmal ausgerechnet und fest hinterlegt."""
+
+    # Ebenen
+    BG_BASE       = "#202020"   # Fenster, Navigationsspalte
+    BG_LAYER      = "#272727"   # Inhaltsfläche
+    BG_CARD       = "#2B2B2B"   # Karten, Listenzeilen, Felder in Ruhe
+    BG_CARD_HOVER = "#323232"   # Karte unter dem Zeiger
+    BG_CARD_PRESS = "#292929"   # Karte gedrückt
+    BG_INPUT      = "#2B2B2B"
+    BG_WELL       = "#232323"   # Eingabefeld auf einer Karte
+    BG_INPUT_FOCUS = "#1F1F1F"  # Feld mit Schreibmarke: dunkler, wie in Fluent
+
+    # Linien
+    STROKE        = "#353535"   # Trennlinien, Kartenrand
+    STROKE_STRONG = "#454545"   # Rand eines Steuerelements
+    STROKE_HOVER  = "#525252"
 
     # Text
-    TEXT       = "#eaecf2"
-    TEXT_SOFT  = "#c5cad6"
-    TEXT_MUTED = "#8b91a3"
-    TEXT_DIM   = "#5a6072"
+    TEXT          = "#FFFFFF"
+    TEXT_SECONDARY = "#C5C5C5"
+    TEXT_TERTIARY = "#9D9D9D"
+    TEXT_DISABLED = "#6B6B6B"
 
-    # Accent (cyan-teal)
-    ACCENT       = "#22d3ee"
-    ACCENT_HOVER = "#67e8f9"
-    ACCENT_PRESS = "#06b6d4"
-    ACCENT_TEXT  = "#062b33"
-    ACCENT_SOFT  = "#0a2832"
-    ACCENT_DIM   = "#0e3a44"
+    # Akzent – trägt ausschließlich Primäraktion, Auswahl und Zustand
+    ACCENT        = "#60CDFF"
+    ACCENT_HOVER  = "#7ED8FF"
+    ACCENT_PRESS  = "#42B8F0"
+    ACCENT_MUTED  = "#2E4756"   # Akzent als Fläche hinter Text
+    ON_ACCENT     = "#003A5C"
 
-    # Status
-    SUCCESS_FG     = "#34d399"
-    SUCCESS_BG     = "#0d2920"
-    SUCCESS_BORDER = "#1a4a36"
-    ERROR_FG       = "#f87171"
-    ERROR_BG       = "#2a0e15"
-    ERROR_BORDER   = "#5a1f2a"
-    WARNING_FG     = "#fbbf24"
-    WARNING_BG     = "#2a200a"
+    # Zustände
+    SUCCESS       = "#6CCB5F"
+    CAUTION       = "#FCE100"
+    DANGER        = "#FF99A4"
+    DANGER_STRONG = "#C42B1C"
 
-    # Specials
-    LINK_BG = "#0c1626"
-    LINK_FG = "#7dd3fc"
+    # Maße
+    RADIUS        = 4
+    RADIUS_CARD   = 6
+    FOCUS_RING    = "#FFFFFF"
+
+
+def _rounded_points(x1: float, y1: float, x2: float, y2: float, r: float) -> list[float]:
+    """Stützpunkte für ein Rechteck mit runden Ecken.
+
+    Tk kann keine runden Ecken auf Widgets; auf dem Canvas entsteht die Form als
+    geglättetes Polygon. Die doppelten Eckpunkte halten die Kanten gerade und
+    runden nur die Ecken."""
+    r = max(0.0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    return [
+        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+    ]
+
+
+def control_fill(parent_bg: str) -> str:
+    """Fläche eines Knopfs oder einer Kachel, passend zur Unterlage.
+
+    Ohne Umriss trägt allein die Fläche die Abgrenzung – auf der Inhaltsfläche eine
+    Stufe heller, auf einer Karte noch eine weiter."""
+    return Theme.BG_CARD_HOVER if parent_bg == Theme.BG_CARD else Theme.BG_CARD
+
+
+def well_fill(parent_bg: str) -> str:
+    """Fläche eines Eingabefelds: eine Stufe *dunkler* als die Unterlage, damit es
+    als Vertiefung liest und nicht als Knopf."""
+    return Theme.BG_WELL if parent_bg == Theme.BG_CARD else Theme.BG_INPUT
+
+
+def draw_round_rect(canvas: tk.Canvas, x1: float, y1: float, x2: float, y2: float,
+                    radius: float, **kwargs: object) -> int:
+    return canvas.create_polygon(
+        _rounded_points(x1, y1, x2, y2, radius),
+        smooth=True, splinesteps=16, **kwargs,  # type: ignore[arg-type]
+    )
+
 
 
 # ============================================================
@@ -737,7 +788,13 @@ class OTSClient:
 
     # ---- Secrets ----
 
-    def share(self, secret: str, ttl_seconds: int, recipient: Optional[str] = None) -> ShareResult:
+    def share(self, secret: str, ttl_seconds: int, recipient: Optional[str] = None,
+              passphrase: Optional[str] = None) -> ShareResult:
+        """Legt das Secret an.
+
+        Mit `passphrase` verlangt der Server sie beim Abruf zusätzlich zum Link.
+        Sie wird nirgends gespeichert: der Empfänger muss sie auf einem anderen Weg
+        bekommen, sonst hebt sie den Zweck des zweiten Kanals auf."""
         if not self.url:
             raise _ots_error("error.api_config", error_type=MISSING_CONFIG)
         body: dict = {
@@ -750,6 +807,8 @@ class OTSClient:
         }
         if recipient:
             body["secret"]["recipient"] = recipient
+        if passphrase:
+            body["secret"]["passphrase"] = passphrase
 
         data = self._request("POST", self.url, json_body=body)
         result = self._share_result(data)
@@ -939,6 +998,7 @@ class HistoryEntry:
     secret_preview: str
     last_state: str
     last_checked: str
+    has_passphrase: bool = False
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -962,6 +1022,7 @@ class HistoryEntry:
             secret_preview=str(data.get("secret_preview", "")),
             last_state=str(data.get("last_state", "")),
             last_checked=str(data.get("last_checked", "")),
+            has_passphrase=_flag(data.get("has_passphrase")),
         )
 
 
@@ -1231,289 +1292,687 @@ class SettingsStore:
         self.last_key_storage = storage
         return storage
 
+# ============================================================
+# Ikonografie – die Symbolschrift von Windows
+# ============================================================
+
+# Tks Canvas zeichnet ohne Kantenglättung: von Hand gezogene Linien werden treppig
+# und wirken neben geglätteter Schrift billig. Windows bringt sein eigenes
+# Symbolsystem als Schriftart mit – dieselbe, aus der Terminal und Einstellungen
+# ihre Symbole nehmen. Die Schriftmaschine glättet sie, die Strichstärke passt zur
+# Textschrift, und es kostet keine zusätzliche Abhängigkeit.
+ICON_FONTS: tuple[str, ...] = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
+
+ICON_GLYPHS: dict[str, str] = {
+    "send":     "",
+    "history":  "",
+    "settings": "",
+    "refresh":  "",
+    "copy":     "",
+    "burn":     "",
+    "delete":   "",
+    "remove":   "",
+    "external": "",
+    "link":     "",
+    "eye":      "",
+    "key":      "",
+    "info":     "",
+    "check":    "",
+    "warning":  "",
+    "error":    "",
+    "close":    "",
+}
+
+_ICON_FONTS: dict[tuple[int, int], Optional[tkfont.Font]] = {}
+
+
+def icon_font(widget: tk.Misc, size: int) -> Optional[tkfont.Font]:
+    """Symbolschrift für diesen Interpreter, oder None auf Systemen ohne sie.
+
+    Der Schlüssel enthält den Tk-Interpreter: Schriftobjekte gehören zu ihrem Root
+    und überleben dessen Ende nicht."""
+    key = (id(widget.tk), size)
+    if key not in _ICON_FONTS:
+        families = set(tkfont.families())
+        family = next((name for name in ICON_FONTS if name in families), "")
+        _ICON_FONTS[key] = tkfont.Font(family=family, size=size) if family else None
+    return _ICON_FONTS[key]
+
+
+def has_icons(widget: tk.Misc) -> bool:
+    return icon_font(widget, 12) is not None
+
+
+def draw_icon(canvas: tk.Canvas, name: str, cx: float, cy: float,
+              size: float, color: str) -> bool:
+    """Setzt ein Symbol mittig auf (cx, cy). Fehlt die Schrift, bleibt der Platz
+    leer und der Aufrufer zeigt nur den Text."""
+    glyph = ICON_GLYPHS.get(name)
+    font = icon_font(canvas, max(8, int(size * 0.75)))
+    if not glyph or font is None:
+        return False
+    canvas.create_text(cx, cy, text=glyph, font=font, fill=color, anchor="center")
+    return True
+
 
 # ============================================================
-# UI Primitives
+# Steuerelemente – auf Canvas gezeichnet, alle Zustände
 # ============================================================
 
-class FlatButton(tk.Frame):
-    """Schlanker Button mit Hover/Press-States – ttk-frei, voll designbar."""
+class Button(tk.Canvas):
+    """Fluent-Knopf: gezeichnet statt gerahmt, damit die Ecken rund sein können.
+
+    Varianten: `accent` (eine primäre Aktion je Ansicht), `standard` (Umriss),
+    `subtle` (nur Text). Führt Ruhe, Zeiger, Fokus, gedrückt, deaktiviert und
+    arbeitend."""
+
+    HEIGHT = 32
+    PAD_X = 14
+    ICON_GAP = 8
+    RING = 2
 
     def __init__(
         self,
         parent: tk.Misc,
         text: str,
-        on_click: Callable[[], None],
+        command: Callable[[], None],
         *,
-        primary: bool = True,
-        ghost: bool = False,
+        variant: str = "standard",
+        icon: str = "",
         font_obj: Optional[tkfont.Font] = None,
-        padx: int = 18,
-        pady: int = 9,
+        min_width: int = 0,
+        height: int = HEIGHT,
+        icon_only: bool = False,
     ) -> None:
-        super().__init__(parent, bg=parent["bg"], highlightthickness=0)
-        self._on_click = on_click
+        self._bg = parent["bg"]
+        self._font = font_obj or tkfont.nametofont("TkDefaultFont")
+        self._text = text
+        self._icon = icon
+        self._icon_only = icon_only
+        self._variant = variant
+        self._command = command
+        self._height = height
+        self._min_width = min_width
+        self._state = "rest"
         self._enabled = True
+        self._focused = False
 
-        if primary:
-            self._bg_default = Theme.ACCENT
-            self._fg_default = Theme.ACCENT_TEXT
-            self._bg_hover   = Theme.ACCENT_HOVER
-            self._bg_press   = Theme.ACCENT_PRESS
-        elif ghost:
-            self._bg_default = parent["bg"]
-            self._fg_default = Theme.TEXT_MUTED
-            self._bg_hover   = Theme.CARD
-            self._bg_press   = Theme.RAISED
-        else:
-            self._bg_default = Theme.RAISED
-            self._fg_default = Theme.TEXT
-            self._bg_hover   = Theme.BORDER_STRONG
-            self._bg_press   = Theme.BORDER_FOCUS
-
-        self._label = tk.Label(
-            self, text=text, bg=self._bg_default, fg=self._fg_default,
-            font=font_obj or ("Segoe UI", 10, "bold"),
-            padx=padx, pady=pady, cursor="hand2",
+        super().__init__(
+            parent, bg=self._bg, highlightthickness=0, bd=0,
+            height=height + self.RING * 2, cursor="hand2", takefocus=1,
         )
-        self._label.pack(fill="both", expand=True)
-        self._label.bind("<Enter>", self._enter)
-        self._label.bind("<Leave>", self._leave)
-        self._label.bind("<Button-1>", self._press)
-        self._label.bind("<ButtonRelease-1>", self._release)
+        self.configure(width=self._measure())
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Return>", self._on_key)
+        self.bind("<space>", self._on_key)
+        self._render()
+
+    # ---- Maße ----
+
+    def _shows_icon(self) -> bool:
+        """Ohne die Symbolschrift des Systems zeigt der Knopf nur seinen Text –
+        und reserviert dann auch keinen Platz für ein Symbol."""
+        return bool(self._icon) and has_icons(self)
+
+    def _measure(self) -> int:
+        if self._icon_only:
+            return self._height + self.RING * 2
+        width = self._font.measure(self._text) + self.PAD_X * 2
+        if self._shows_icon():
+            width += 16 + self.ICON_GAP
+        return max(width, self._min_width) + self.RING * 2
+
+    # ---- Zustandswechsel ----
 
     def set_text(self, text: str) -> None:
-        self._label.configure(text=text)
+        self._text = text
+        self.configure(width=self._measure())
+        self._render()
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
-        if enabled:
-            self._label.configure(bg=self._bg_default, fg=self._fg_default, cursor="hand2")
-        else:
-            self._label.configure(bg=Theme.CARD, fg=Theme.TEXT_DIM, cursor="arrow")
+        self.configure(cursor="hand2" if enabled else "arrow", takefocus=1 if enabled else 0)
+        self._state = "rest"
+        self._render()
 
-    def _enter(self, _e: tk.Event) -> None:
+    def _on_enter(self, _e: tk.Event) -> None:
         if self._enabled:
-            self._label.configure(bg=self._bg_hover)
+            self._state = "hover"
+            self._render()
 
-    def _leave(self, _e: tk.Event) -> None:
-        if self._enabled:
-            self._label.configure(bg=self._bg_default)
+    def _on_leave(self, _e: tk.Event) -> None:
+        self._state = "rest"
+        self._render()
 
-    def _press(self, _e: tk.Event) -> None:
-        if self._enabled:
-            self._label.configure(bg=self._bg_press)
-
-    def _release(self, _e: tk.Event) -> None:
+    def _on_press(self, _e: tk.Event) -> None:
         if not self._enabled:
             return
-        self._label.configure(bg=self._bg_hover)
-        self._on_click()
+        self.focus_set()
+        self._state = "press"
+        self._render()
 
-
-class PillBar(tk.Frame):
-    """Auswahlleiste mit Pill-Buttons."""
-
-    def __init__(
-        self,
-        parent: tk.Misc,
-        presets: tuple[TTLPreset, ...],
-        default_key: str,
-        on_change: Callable[[TTLPreset], None],
-        *,
-        lang: str = DEFAULT_LANGUAGE,
-    ) -> None:
-        super().__init__(parent, bg=parent["bg"])
-        self._on_change = on_change
-        self._labels: dict[str, tk.Label] = {}
-        self._selected = resolve_ttl_key(default_key)
-        cols = 5
-        for index, preset in enumerate(presets):
-            row, col = divmod(index, cols)
-            pill = tk.Label(
-                self, text=preset.label(lang),
-                bg=parent["bg"], fg=Theme.TEXT_MUTED,
-                font=("Segoe UI", 9), padx=14, pady=7, cursor="hand2",
-            )
-            pill.grid(row=row, column=col, padx=(0, 6), pady=4, sticky="w")
-            pill.bind("<Button-1>", lambda _e, p=preset: self._select(p))
-            pill.bind("<Enter>", lambda _e, p=preset: self._hover(p.key, True))
-            pill.bind("<Leave>", lambda _e, p=preset: self._hover(p.key, False))
-            self._labels[preset.key] = pill
-        self._refresh()
-
-    @property
-    def selected_key(self) -> str:
-        return self._selected
-
-    def selected_preset(self) -> TTLPreset:
-        return preset_for_key(self._selected)
-
-    def _select(self, preset: TTLPreset) -> None:
-        self._selected = preset.key
-        self._refresh()
-        self._on_change(preset)
-
-    def _hover(self, key: str, entering: bool) -> None:
-        if key == self._selected:
+    def _on_release(self, event: tk.Event) -> None:
+        if not self._enabled:
             return
-        widget = self._labels[key]
-        widget.configure(
-            bg=Theme.CARD if entering else self["bg"],
-            fg=Theme.TEXT if entering else Theme.TEXT_MUTED,
-        )
+        inside = 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height()
+        self._state = "hover" if inside else "rest"
+        self._render()
+        if inside:
+            self._command()
 
-    def _refresh(self) -> None:
-        for label, widget in self._labels.items():
-            if label == self._selected:
-                widget.configure(bg=Theme.ACCENT_DIM, fg=Theme.ACCENT)
-            else:
-                widget.configure(bg=self["bg"], fg=Theme.TEXT_MUTED)
-
-
-class ThinScrollbar(tk.Frame):
-    """Schlanke, moderne Scrollbar – ersetzt das Vista-artige ttk-Default."""
-
-    WIDTH = 10
-    THUMB_WIDTH = 4
-    MIN_THUMB_HEIGHT = 28
-
-    def __init__(self, parent: tk.Misc, command: Callable[..., None]) -> None:
-        super().__init__(parent, bg=Theme.SURFACE, width=self.WIDTH)
-        self.pack_propagate(False)
-        self._command = command
-        self._first = 0.0
-        self._last = 1.0
-        self._press_offset = 0
-
-        self._thumb = tk.Frame(
-            self, bg=Theme.BORDER_STRONG,
-            width=self.THUMB_WIDTH, cursor="hand2",
-        )
-        self.bind("<Configure>", self._redraw)
-        self.bind("<Button-1>", self._on_track_click)
-
-        self._thumb.bind("<Button-1>", self._on_thumb_press)
-        self._thumb.bind("<B1-Motion>", self._on_thumb_drag)
-        self._thumb.bind("<Enter>", lambda _e: self._thumb.configure(bg=Theme.TEXT_MUTED))
-        self._thumb.bind("<Leave>", lambda _e: self._thumb.configure(bg=Theme.BORDER_STRONG))
-
-    def set(self, first: str, last: str) -> None:  # pragma: no cover
-        self._first = float(first)
-        self._last = float(last)
-        self._redraw()
-
-    def _redraw(self, _e: Optional[tk.Event] = None) -> None:
-        h = self.winfo_height()
-        if h <= 0:
-            return
-        span = self._last - self._first
-        if span >= 0.999:
-            self._thumb.place_forget()
-            return
-        y = int(self._first * h)
-        height = max(self.MIN_THUMB_HEIGHT, int(span * h))
-        x = (self.WIDTH - self.THUMB_WIDTH) // 2
-        self._thumb.place(x=x, y=y, width=self.THUMB_WIDTH, height=height)
-
-    def _on_thumb_press(self, e: tk.Event) -> str:
-        self._press_offset = e.y
+    def _on_key(self, _e: tk.Event) -> str:
+        if self._enabled:
+            self._command()
         return "break"
 
-    def _on_thumb_drag(self, e: tk.Event) -> None:
-        h = self.winfo_height()
-        if h <= 0:
+    def _on_focus_in(self, _e: tk.Event) -> None:
+        self._focused = True
+        self._render()
+
+    def _on_focus_out(self, _e: tk.Event) -> None:
+        self._focused = False
+        self._render()
+
+    # ---- Darstellung ----
+
+    def _colors(self) -> tuple[str, str, str]:
+        """(Fläche, Rand, Text) für den aktuellen Zustand."""
+        if not self._enabled:
+            disabled = control_fill(self._bg)
+            return disabled, disabled, Theme.TEXT_DISABLED
+        if self._variant == "accent":
+            fill = {"rest": Theme.ACCENT, "hover": Theme.ACCENT_HOVER,
+                    "press": Theme.ACCENT_PRESS}[self._state]
+            return fill, fill, Theme.ON_ACCENT
+        if self._variant == "subtle":
+            fill = {"rest": self._bg, "hover": Theme.BG_CARD_HOVER,
+                    "press": Theme.BG_CARD_PRESS}[self._state]
+            return fill, fill, Theme.TEXT
+        rest = control_fill(self._bg)
+        fill = {"rest": rest, "hover": Theme.BG_CARD_HOVER,
+                "press": Theme.BG_CARD_PRESS}[self._state]
+        stroke = Theme.STROKE_HOVER if self._state == "hover" else fill
+        return fill, stroke, Theme.TEXT
+
+    def _render(self) -> None:
+        self.delete("all")
+        fill, stroke, text_color = self._colors()
+        width = int(self["width"])
+        r = self.RING
+        x2, y2 = width - r, self._height + r
+
+        if self._focused and self._enabled:
+            draw_round_rect(self, 1, 1, width - 1, self._height + r * 2 - 1,
+                            Theme.RADIUS + 2, fill="", outline=Theme.FOCUS_RING, width=2)
+        draw_round_rect(self, r, r, x2, y2, Theme.RADIUS, fill=fill, outline=stroke)
+
+        cy = (r + y2) / 2
+        if self._icon_only:
+            if not draw_icon(self, self._icon, (r + x2) / 2, cy, 18, text_color):
+                self.create_text((r + x2) / 2, cy, text=self._text or "…",
+                                 fill=text_color, font=self._font, anchor="center")
             return
-        new_y = self._thumb.winfo_y() + e.y - self._press_offset
-        ratio = max(0.0, min(1.0, new_y / h))
-        self._command("moveto", str(ratio))
-
-    def _on_track_click(self, e: tk.Event) -> None:
-        h = self.winfo_height()
-        if h <= 0:
-            return
-        span = self._last - self._first
-        thumb_h = max(self.MIN_THUMB_HEIGHT, int(span * h))
-        ratio = max(0.0, min(1.0, (e.y - thumb_h / 2) / h))
-        self._command("moveto", str(ratio))
+        if self._shows_icon():
+            total = 16 + self.ICON_GAP + self._font.measure(self._text)
+            start = (r + x2) / 2 - total / 2
+            draw_icon(self, self._icon, start + 8, cy, 16, text_color)
+            self.create_text(start + 16 + self.ICON_GAP, cy, text=self._text,
+                             fill=text_color, font=self._font, anchor="w")
+        else:
+            self.create_text((r + x2) / 2, cy, text=self._text, fill=text_color,
+                             font=self._font, anchor="center")
 
 
-class NavItem(tk.Frame):
-    """Sidebar-Eintrag mit aktivem/Hover-State und Akzent-Streifen links."""
+class Field(tk.Canvas):
+    """Fluent-Eingabefeld: gezeichneter Rahmen, unter der Schreibmarke bekommt die
+    Unterkante die Akzentfarbe."""
+
+    HEIGHT = 32
 
     def __init__(
         self,
         parent: tk.Misc,
-        label: str,
-        key: str,
-        on_select: Callable[[str], None],
-        icon: str = "",
+        *,
+        textvariable: Optional[tk.StringVar] = None,
+        font_obj: Optional[tkfont.Font] = None,
+        show: str = "",
+        readonly: bool = False,
+        height: int = HEIGHT,
+        placeholder: str = "",
     ) -> None:
-        super().__init__(parent, bg=Theme.SIDEBAR, cursor="hand2")
-        self.key = key
-        self._on_select = on_select
-        self._active = False
+        self._bg = parent["bg"]
+        self._fill = well_fill(self._bg)
+        self._height = height
+        self._focused = False
+        self._hovered = False
+        super().__init__(parent, bg=self._bg, highlightthickness=0, bd=0, height=height)
 
-        self._indicator = tk.Frame(self, bg=Theme.SIDEBAR, width=3)
-        self._indicator.pack(side="left", fill="y")
-        self._indicator.pack_propagate(False)
-
-        self._body = tk.Frame(self, bg=Theme.SIDEBAR)
-        self._body.pack(side="left", fill="both", expand=True, padx=(14, 14), pady=11)
-
-        self._icon: Optional[tk.Label] = None
-        if icon:
-            self._icon = tk.Label(
-                self._body, text=icon, bg=Theme.SIDEBAR, fg=Theme.TEXT_MUTED,
-                font=("Segoe UI", 12),
-            )
-            self._icon.pack(side="left", padx=(0, 12))
-
-        self._text = tk.Label(
-            self._body, text=label, bg=Theme.SIDEBAR, fg=Theme.TEXT_MUTED,
-            font=("Segoe UI", 10, "bold"),
+        self.entry = tk.Entry(
+            self, textvariable=textvariable, font=font_obj,
+            bg=self._fill, fg=Theme.TEXT, insertbackground=Theme.ACCENT,
+            relief="flat", bd=0, highlightthickness=0,
+            selectbackground=Theme.ACCENT_MUTED, selectforeground=Theme.TEXT,
+            show=show, readonlybackground=self._fill,
+            disabledbackground=Theme.BG_CARD, disabledforeground=Theme.TEXT_DISABLED,
         )
-        self._text.pack(side="left")
+        if readonly:
+            self.entry.configure(state="readonly")
+        self._placeholder = placeholder
+        self._window = self.create_window(12, height / 2, window=self.entry,
+                                          anchor="w", height=height - 10)
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<Configure>", lambda _e: self._render())
+        self.bind("<Button-1>", lambda _e: self.entry.focus_set())
 
-        widgets = [self, self._indicator, self._body, self._text]
-        if self._icon is not None:
-            widgets.append(self._icon)
-        for w in widgets:
-            w.bind("<Button-1>", lambda _e: self._on_select(self.key))
-            w.bind("<Enter>", lambda _e: self._hover(True))
-            w.bind("<Leave>", lambda _e: self._hover(False))
+    def _stroke(self) -> str:
+        """Ruhend fast unsichtbar – der Rand meldet sich erst, wenn man hinzeigt."""
+        if self._focused:
+            return Theme.STROKE_STRONG
+        return Theme.STROKE_HOVER if self._hovered else self._fill
+
+    def _set_hover(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._render()
+
+    def _on_focus_in(self, _e: tk.Event) -> None:
+        self._focused = True
+        self.entry.configure(bg=Theme.BG_INPUT_FOCUS)
+        self._render()
+
+    def _on_focus_out(self, _e: tk.Event) -> None:
+        self._focused = False
+        self.entry.configure(bg=self._fill)
+        self._render()
+
+    def _render(self) -> None:
+        self.delete("frame")
+        width = self.winfo_width()
+        if width <= 1:
+            return
+        fill = Theme.BG_INPUT_FOCUS if self._focused else self._fill
+        stroke = self._stroke()
+        draw_round_rect(self, 1, 1, width - 1, self._height - 1, Theme.RADIUS,
+                        fill=fill, outline=stroke, tags="frame")
+        if self._focused:
+            # Fluents Kennzeichen für das aktive Feld: 2px Akzent an der Unterkante.
+            self.create_line(1 + Theme.RADIUS, self._height - 2, width - 1 - Theme.RADIUS,
+                             self._height - 2, fill=Theme.ACCENT, width=2, tags="frame")
+        self.itemconfigure(self._window, width=width - 24)
+        self.tag_lower("frame")
+
+
+class TextArea(tk.Canvas):
+    """Mehrzeiliges Eingabefeld mit demselben Rahmenverhalten wie `Field`."""
+
+    def __init__(self, parent: tk.Misc, *, font_obj: Optional[tkfont.Font] = None,
+                 height: int = 160) -> None:
+        self._bg = parent["bg"]
+        self._fill = well_fill(self._bg)
+        self._height = height  # angeforderte Mindesthöhe; gezeichnet wird die echte
+        self._focused = False
+        self._hovered = False
+        super().__init__(parent, bg=self._bg, highlightthickness=0, bd=0, height=height)
+
+        self.text = tk.Text(
+            self, font=font_obj, bg=self._fill, fg=Theme.TEXT,
+            insertbackground=Theme.ACCENT, relief="flat", bd=0, highlightthickness=0,
+            selectbackground=Theme.ACCENT_MUTED, selectforeground=Theme.TEXT,
+            wrap="word", undo=True, padx=0, pady=0,
+        )
+        self._window = self.create_window(12, 10, window=self.text, anchor="nw")
+        self.text.bind("<FocusIn>", self._on_focus_in)
+        self.text.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<Configure>", lambda _e: self._render())
+
+    def _stroke(self) -> str:
+        if self._focused:
+            return Theme.STROKE_STRONG
+        return Theme.STROKE_HOVER if self._hovered else self._fill
+
+    def _set_hover(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._render()
+
+    def _on_focus_in(self, _e: tk.Event) -> None:
+        self._focused = True
+        self.text.configure(bg=Theme.BG_INPUT_FOCUS)
+        self._render()
+
+    def _on_focus_out(self, _e: tk.Event) -> None:
+        self._focused = False
+        self.text.configure(bg=self._fill)
+        self._render()
+
+    def _render(self) -> None:
+        self.delete("frame")
+        width, height = self.winfo_width(), self.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        fill = Theme.BG_INPUT_FOCUS if self._focused else self._fill
+        stroke = self._stroke()
+        draw_round_rect(self, 1, 1, width - 1, height - 1, Theme.RADIUS,
+                        fill=fill, outline=stroke, tags="frame")
+        if self._focused:
+            self.create_line(1 + Theme.RADIUS, height - 2, width - 1 - Theme.RADIUS,
+                             height - 2, fill=Theme.ACCENT, width=2, tags="frame")
+        self.itemconfigure(self._window, width=width - 24, height=height - 20)
+        self.tag_lower("frame")
+
+
+class ChoiceGroup(tk.Canvas):
+    """Auswahlgruppe aus gleich gebauten Kacheln – für Gültigkeit, Region, Sprache.
+
+    Eine Kachel trägt die Akzentfläche, alle anderen die Kartenfläche; die Auswahl
+    ist damit ohne Farbsehen erkennbar, weil sie zusätzlich den Textkontrast dreht."""
+
+    TILE_HEIGHT = 32
+    GAP = 6
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        options: list[tuple[str, str]],
+        value: str,
+        on_change: Callable[[str], None],
+        *,
+        font_obj: Optional[tkfont.Font] = None,
+        columns: int = 5,
+    ) -> None:
+        self._bg = parent["bg"]
+        self._font = font_obj or tkfont.nametofont("TkDefaultFont")
+        self._items = options
+        self._value = value
+        self._on_change = on_change
+        self._columns = columns
+        self._hover: Optional[str] = None
+        self._focus_index = max(0, [k for k, _ in options].index(value) if any(
+            k == value for k, _ in options) else 0)
+        self._focused = False
+        self._boxes: dict[str, tuple[float, float, float, float]] = {}
+
+        rows = math.ceil(len(options) / columns)
+        height = rows * self.TILE_HEIGHT + (rows - 1) * self.GAP
+        super().__init__(parent, bg=self._bg, highlightthickness=0, bd=0,
+                         height=height, takefocus=1)
+        self.bind("<Configure>", lambda _e: self._render())
+        self.bind("<Motion>", self._on_motion)
+        self.bind("<Leave>", lambda _e: self._set_hover(None))
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<FocusIn>", lambda _e: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focused(False))
+        self.bind("<Left>", lambda _e: self._step(-1))
+        self.bind("<Right>", lambda _e: self._step(1))
+        self.bind("<Return>", lambda _e: self._activate())
+        self.bind("<space>", lambda _e: self._activate())
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str) -> None:
+        self._value = value
+        self._render()
+
+    def _set_hover(self, key: Optional[str]) -> None:
+        if key != self._hover:
+            self._hover = key
+            self._render()
+
+    def _set_focused(self, focused: bool) -> None:
+        self._focused = focused
+        self._render()
+
+    def _hit(self, x: float, y: float) -> Optional[str]:
+        for key, (x1, y1, x2, y2) in self._boxes.items():
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return key
+        return None
+
+    def _on_motion(self, event: tk.Event) -> None:
+        self._set_hover(self._hit(event.x, event.y))
+
+    def _on_click(self, event: tk.Event) -> None:
+        self.focus_set()
+        key = self._hit(event.x, event.y)
+        if key and key != self._value:
+            self._value = key
+            self._focus_index = [k for k, _ in self._items].index(key)
+            self._render()
+            self._on_change(key)
+
+    def _step(self, delta: int) -> str:
+        self._focus_index = (self._focus_index + delta) % len(self._items)
+        self._render()
+        return "break"
+
+    def _activate(self) -> str:
+        key = self._items[self._focus_index][0]
+        if key != self._value:
+            self._value = key
+            self._render()
+            self._on_change(key)
+        return "break"
+
+    def _render(self) -> None:
+        self.delete("all")
+        self._boxes.clear()
+        width = self.winfo_width()
+        if width <= 1:
+            return
+        columns = self._columns
+        tile_w = (width - (columns - 1) * self.GAP) / columns
+        for index, (key, label) in enumerate(self._items):
+            row, col = divmod(index, columns)
+            x1 = col * (tile_w + self.GAP)
+            y1 = row * (self.TILE_HEIGHT + self.GAP)
+            x2, y2 = x1 + tile_w, y1 + self.TILE_HEIGHT
+            self._boxes[key] = (x1, y1, x2, y2)
+
+            selected = key == self._value
+            if selected:
+                fill, stroke, fg = Theme.ACCENT, Theme.ACCENT, Theme.ON_ACCENT
+            elif self._hover == key:
+                fill, stroke, fg = Theme.BG_CARD_HOVER, Theme.STROKE_HOVER, Theme.TEXT
+            else:
+                # Die Fläche unterscheidet die Kachel schon vom Grund; ein Umriss
+                # obendrauf macht aus einer Auswahl ein Gitter.
+                rest = control_fill(self._bg)
+                fill, stroke, fg = rest, rest, Theme.TEXT_SECONDARY
+            draw_round_rect(self, x1 + 1, y1 + 1, x2 - 1, y2 - 1, Theme.RADIUS,
+                            fill=fill, outline=stroke)
+            if self._focused and index == self._focus_index:
+                draw_round_rect(self, x1 + 1, y1 + 1, x2 - 1, y2 - 1, Theme.RADIUS,
+                                fill="", outline=Theme.FOCUS_RING, width=2)
+            self.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=label, fill=fg,
+                             font=self._font, anchor="center")
+
+
+class NavItem(tk.Canvas):
+    """Eintrag der Navigationsspalte, 40 px hoch, mit Akzentbalken bei Auswahl."""
+
+    HEIGHT = 40
+
+    def __init__(self, parent: tk.Misc, text: str, icon: str,
+                 command: Callable[[], None], *,
+                 font_obj: Optional[tkfont.Font] = None) -> None:
+        self._bg = parent["bg"]
+        self._font = font_obj or tkfont.nametofont("TkDefaultFont")
+        self._text = text
+        self._icon = icon
+        self._command = command
+        self._active = False
+        self._hover = False
+        self._focused = False
+        super().__init__(parent, bg=self._bg, highlightthickness=0, bd=0,
+                         height=self.HEIGHT, cursor="hand2", takefocus=1)
+        self.bind("<Configure>", lambda _e: self._render())
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<Button-1>", lambda _e: (self.focus_set(), self._command()))
+        self.bind("<Return>", lambda _e: self._command())
+        self.bind("<space>", lambda _e: self._command())
+        self.bind("<FocusIn>", lambda _e: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focused(False))
 
     def set_active(self, active: bool) -> None:
         self._active = active
-        if active:
-            self._indicator.configure(bg=Theme.ACCENT)
-            self._set_bg(Theme.ACCENT_SOFT)
-            self._text.configure(fg=Theme.TEXT)
-            if self._icon is not None:
-                self._icon.configure(fg=Theme.ACCENT)
-        else:
-            self._indicator.configure(bg=Theme.SIDEBAR)
-            self._set_bg(Theme.SIDEBAR)
-            self._text.configure(fg=Theme.TEXT_MUTED)
-            if self._icon is not None:
-                self._icon.configure(fg=Theme.TEXT_MUTED)
+        self._render()
 
-    def _hover(self, entering: bool) -> None:
-        if self._active:
+    def _set_hover(self, hover: bool) -> None:
+        self._hover = hover
+        self._render()
+
+    def _set_focused(self, focused: bool) -> None:
+        self._focused = focused
+        self._render()
+
+    def _render(self) -> None:
+        self.delete("all")
+        width = self.winfo_width()
+        if width <= 1:
             return
-        bg = Theme.CARD if entering else Theme.SIDEBAR
-        fg = Theme.TEXT if entering else Theme.TEXT_MUTED
-        self._set_bg(bg)
-        self._text.configure(fg=fg)
-        if self._icon is not None:
-            self._icon.configure(fg=fg)
+        if self._active:
+            fill, fg = Theme.BG_CARD, Theme.TEXT
+        elif self._hover:
+            fill, fg = Theme.BG_CARD_HOVER, Theme.TEXT
+        else:
+            fill, fg = self._bg, Theme.TEXT_SECONDARY
+        draw_round_rect(self, 2, 2, width - 2, self.HEIGHT - 2, Theme.RADIUS, fill=fill,
+                        outline=fill)
+        if self._active:
+            self.create_line(4, 12, 4, self.HEIGHT - 12, fill=Theme.ACCENT, width=3,
+                             capstyle="round")
+        if self._focused:
+            draw_round_rect(self, 2, 2, width - 2, self.HEIGHT - 2, Theme.RADIUS,
+                            fill="", outline=Theme.FOCUS_RING, width=2)
+        drawn = draw_icon(self, self._icon, 26, self.HEIGHT / 2, 18, fg)
+        self.create_text(46 if drawn else 20, self.HEIGHT / 2, text=self._text,
+                         fill=fg, font=self._font, anchor="w")
 
-    def _set_bg(self, color: str) -> None:
-        self.configure(bg=color)
-        self._body.configure(bg=color)
-        self._text.configure(bg=color)
-        if self._icon is not None:
-            self._icon.configure(bg=color)
+
+class InfoBar(tk.Frame):
+    """Fluents Meldungsleiste: bleibt stehen, bis sie beantwortet oder ersetzt wird.
+
+    Ersetzt die frühere schwebende Sprechblase – die verschwand nach ein paar
+    Sekunden, auch wenn die Meldung ein Fehler war, den jemand lesen musste."""
+
+    SEVERITIES: ClassVar[dict[str, tuple[str, str]]] = {
+        "info":    (Theme.ACCENT, "info"),
+        "success": (Theme.SUCCESS, "check"),
+        "warning": (Theme.CAUTION, "warning"),
+        "error":   (Theme.DANGER, "error"),
+    }
+
+    def __init__(self, parent: tk.Misc, *, font_obj: Optional[tkfont.Font] = None,
+                 on_close: Optional[Callable[[], None]] = None) -> None:
+        super().__init__(parent, bg=Theme.BG_CARD, highlightthickness=1,
+                         highlightbackground=Theme.STROKE)
+        self._font = font_obj or tkfont.nametofont("TkDefaultFont")
+        self._on_close = on_close
+
+        self._accent = tk.Frame(self, bg=Theme.ACCENT, width=3)
+        self._accent.pack(side="left", fill="y")
+
+        self._icon = tk.Canvas(self, bg=Theme.BG_CARD, width=20, height=20,
+                               highlightthickness=0, bd=0)
+        self._icon.pack(side="left", padx=(12, 0), pady=12)
+
+        self._label = tk.Label(self, text="", bg=Theme.BG_CARD, fg=Theme.TEXT,
+                               font=self._font, justify="left", anchor="w",
+                               wraplength=520)
+        self._label.pack(side="left", fill="x", expand=True, padx=(10, 10), pady=10)
+
+        self._close = Button(self, "", self._dismiss, variant="subtle", icon="close",
+                             icon_only=True, height=28)
+        self._close.pack(side="right", padx=(0, 8))
+
+    def show(self, message: str, severity: str = "info") -> None:
+        color, icon = self.SEVERITIES.get(severity, self.SEVERITIES["info"])
+        self._accent.configure(bg=color)
+        self._icon.delete("all")
+        draw_icon(self._icon, icon, 10, 10, 16, color)
+        self._label.configure(text=message)
+
+    def _dismiss(self) -> None:
+        if self._on_close:
+            self._on_close()
+
+
+class ThinScrollbar(tk.Canvas):
+    """Schmale Bildlaufleiste ohne Pfeile, wie in Fluent."""
+
+    WIDTH = 12
+    THUMB = 4
+    THUMB_HOVER = 6
+    MIN_THUMB = 32
+
+    def __init__(self, parent: tk.Misc, command: Callable[..., None]) -> None:
+        super().__init__(parent, bg=parent["bg"], width=self.WIDTH,
+                         highlightthickness=0, bd=0)
+        self._command = command
+        self._first = 0.0
+        self._last = 1.0
+        self._hover = False
+        self._drag_origin: Optional[float] = None
+        self.bind("<Configure>", lambda _e: self._render())
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_drag_origin", None))
+
+    def set(self, first: str, last: str) -> None:
+        self._first, self._last = float(first), float(last)
+        self._render()
+
+    def _set_hover(self, hover: bool) -> None:
+        self._hover = hover
+        self._render()
+
+    def _thumb_bounds(self) -> tuple[float, float]:
+        height = self.winfo_height()
+        top = self._first * height
+        bottom = self._last * height
+        if bottom - top < self.MIN_THUMB:
+            bottom = min(height, top + self.MIN_THUMB)
+            top = bottom - self.MIN_THUMB
+        return top, bottom
+
+    def _render(self) -> None:
+        self.delete("all")
+        if self._first <= 0.0 and self._last >= 1.0:
+            return
+        top, bottom = self._thumb_bounds()
+        width = self.THUMB_HOVER if self._hover else self.THUMB
+        x = (self.WIDTH - width) / 2
+        draw_round_rect(self, x, top + 2, x + width, bottom - 2, width / 2,
+                        fill=Theme.STROKE_HOVER if self._hover else Theme.STROKE_STRONG,
+                        outline="")
+
+    def _on_press(self, event: tk.Event) -> None:
+        top, bottom = self._thumb_bounds()
+        if top <= event.y <= bottom:
+            self._drag_origin = event.y - top
+            return
+        fraction = max(0.0, min(1.0, event.y / max(1, self.winfo_height())))
+        self._command("moveto", fraction - (self._last - self._first) / 2)
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if self._drag_origin is None:
+            return
+        height = max(1, self.winfo_height())
+        fraction = max(0.0, min(1.0, (event.y - self._drag_origin) / height))
+        self._command("moveto", fraction)
 
 
 # ============================================================
@@ -1521,43 +1980,64 @@ class NavItem(tk.Frame):
 # ============================================================
 
 class App(tk.Tk):
-    SIDEBAR_WIDTH = 240
+    """Fenster und Ablauf.
+
+    RICHTUNG: Die Designsprache von Windows selbst, voll ausgeführt – kein Zitat
+    und keine eigene Bildsprache. Wer die App neben den Windows-Einstellungen
+    öffnet, soll keinen Bruch bemerken. Was sie dafür ablegt: die Augenbrauen über
+    den Überschriften, die schwebende Sprechblase, Unicode-Zeichen als Symbole und
+    den Cyan-auf-Navy-Anstrich.
+    EIGENE WELT: Fluent-Dunkelebenen (#202020/#272727/#2B2B2B) mit einem einzigen
+    Akzent (#60CDFF), der nur Primäraktion, Auswahl und Zustand trägt; Segoe UI
+    Variable in fester Rampe, Cascadia Mono ausschließlich für Maschinenwerte;
+    Steuerelemente auf Canvas gezeichnet, damit die Ecken rund und die Fokusringe
+    echt sind.
+    ABLAUF: Fenster auf, Nachricht tippen, Link liegt in der Zwischenablage. Alles
+    andere – Verlauf, Zustand, Verbrennen, Einstellungen – ordnet sich diesem Weg
+    unter.
+    ERSTE ANSICHT: Navigationsspalte links (208 px), rechts eine Spalte von höchstens
+    640 px: Überschrift, Empfänger, Nachricht, Gültigkeit, Passphrase, darunter
+    rechtsbündig die einzige Akzentfläche der Ansicht.
+    FORM: Kategorie-Standard, bewusst gewählt (stehende Alternative des
+    Richtungswurfs), Qualitätsmaßstab Windows Terminal und Einstellungen.
+    """
+
+    NAV_WIDTH = 208
+    CONTENT_MAX = 640
 
     def __init__(self) -> None:
         super().__init__()
         self.title("OneTimeSecret Client")
-        self.geometry("1020x760")
-        self.minsize(940, 700)
-        self.configure(bg=Theme.BG)
+        # Höher als das Formular braucht: so bleibt Luft, wenn unten eine Meldung
+        # einblendet, und der Verlauf zeigt mehr als drei Einträge.
+        self.geometry("1060x860")
+        self.minsize(920, 640)
+        self.configure(bg=Theme.BG_BASE)
         self._apply_window_icon()
 
         self.settings_store = SettingsStore()
         self.history = HistoryStore()
 
-        self._current_section: str = "send"
-        self._send_view: str = "form"
-        self._toast_job: Optional[str] = None
-        self._last_metadata_identifier: str = ""
+        self._current_section = "send"
+        self._send_view = "form"
+        self._last_metadata_identifier = ""
+        self._message_job: Optional[str] = None
 
         self._nav_items: dict[str, NavItem] = {}
         self._sections: dict[str, tk.Frame] = {}
         self._send_views: dict[str, tk.Frame] = {}
-        self._main_frame: Optional[tk.Frame] = None
-        self._sidebar_frame: Optional[tk.Frame] = None
-        self._divider_frame: Optional[tk.Frame] = None
+        self._nav_frame: Optional[tk.Frame] = None
+        self._content_frame: Optional[tk.Frame] = None
 
         self._apply_settings(self.settings_store.current)
-
         self._setup_fonts()
-        self._setup_ttk_styles()
         self._build_ui()
         self._bind_shortcuts()
         self._center_window()
 
-    # ---- Window chrome ----
+    # ---- Fenster ----
 
     def _apply_window_icon(self) -> None:
-        """Set the Tk window icon. Falls back silently to the Tk default."""
         if not ICON_PATH.exists():
             logger.debug("App icon not found at %s; using Tk default", ICON_PATH)
             return
@@ -1566,10 +2046,21 @@ class App(tk.Tk):
         except tk.TclError as exc:
             logger.debug("Could not apply window icon: %s", exc)
 
-    # ---- Settings application ----
+    def _center_window(self) -> None:
+        self.update_idletasks()
+        width, height = self.winfo_width(), self.winfo_height()
+        x = (self.winfo_screenwidth() - width) // 2
+        y = max(0, (self.winfo_screenheight() - height) // 2 - 30)
+        self.geometry(f"+{x}+{y}")
+
+    def _bind_shortcuts(self) -> None:
+        self.bind("<Control-Return>", lambda _e: self._submit())
+        self.bind("<Escape>", lambda _e: self._reset_to_form())
+        self.bind("<Control-l>", lambda _e: self._copy_link())
+
+    # ---- Einstellungen ----
 
     def _apply_settings(self, settings: Settings) -> None:
-        """Übernimmt Settings als App-Attribute und (re)initialisiert den API-Client."""
         self.settings = settings
         known_languages = {code for code, _label in LANGUAGES}
         self.lang = settings.language if settings.language in known_languages else DEFAULT_LANGUAGE
@@ -1598,464 +2089,443 @@ class App(tk.Tk):
         Serverdetail – gerendert wird sie erst hier, in der eingestellten Sprache."""
         return exc.localized(self.lang)
 
-    # ---- Fonts / Styles ----
+    # ---- Schrift ----
 
     def _setup_fonts(self) -> None:
         families = set(tkfont.families())
-        display = "Segoe UI Variable Display" if "Segoe UI Variable Display" in families else "Segoe UI"
-        text = "Segoe UI Variable Text" if "Segoe UI Variable Text" in families else "Segoe UI"
-        small = "Segoe UI Variable Small" if "Segoe UI Variable Small" in families else "Segoe UI"
-        mono = "Cascadia Mono" if "Cascadia Mono" in families else "Consolas"
 
-        self.f_title       = tkfont.Font(family=display, size=22)
-        self.f_h2          = tkfont.Font(family=display, size=14, weight="bold")
-        self.f_brand       = tkfont.Font(family=display, size=14, weight="bold")
-        self.f_body        = tkfont.Font(family=text,    size=10)
-        self.f_body_strong = tkfont.Font(family=text,    size=10, weight="bold")
-        self.f_button      = tkfont.Font(family=text,    size=10, weight="bold")
-        self.f_eyebrow     = tkfont.Font(family=small,   size=8,  weight="bold")
-        self.f_caption     = tkfont.Font(family=small,   size=8)
-        self.f_mono        = tkfont.Font(family=mono,    size=10)
+        def pick(*candidates: str) -> str:
+            for name in candidates:
+                if name in families:
+                    return name
+            return candidates[-1]
 
-    def _setup_ttk_styles(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure(
-            "Accent.Horizontal.TProgressbar",
-            troughcolor=Theme.SURFACE, background=Theme.ACCENT,
-            bordercolor=Theme.SURFACE,
-            lightcolor=Theme.ACCENT, darkcolor=Theme.ACCENT,
-            thickness=3,
-        )
-        style.configure(
-            "Vault.Vertical.TScrollbar",
-            background=Theme.SURFACE, troughcolor=Theme.BG,
-            bordercolor=Theme.BG, arrowcolor=Theme.TEXT_MUTED,
-            relief="flat",
-        )
+        ui = pick("Segoe UI Variable Text", "Segoe UI", "Selawik", "Helvetica")
+        display = pick("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", "Helvetica")
+        mono = pick("Cascadia Mono", "Consolas", "Courier New")
 
-    def _center_window(self) -> None:
-        self.update_idletasks()
-        w, h = self.winfo_width(), self.winfo_height()
-        x = (self.winfo_screenwidth() - w) // 2
-        y = (self.winfo_screenheight() - h) // 3
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        # Fluents Rampe: feste Größen, Schrittweite ~1.2 – kein fließendes Skalieren.
+        self.f_title = tkfont.Font(family=display, size=20, weight="bold")
+        self.f_subtitle = tkfont.Font(family=ui, size=13, weight="bold")
+        self.f_body_strong = tkfont.Font(family=ui, size=10, weight="bold")
+        self.f_body = tkfont.Font(family=ui, size=10)
+        self.f_caption = tkfont.Font(family=ui, size=9)
+        self.f_mono = tkfont.Font(family=mono, size=10)
+        self.f_mono_small = tkfont.Font(family=mono, size=9)
 
-    def _bind_shortcuts(self) -> None:
-        self.bind_all("<Control-Return>", lambda _e: self._submit())
-        self.bind_all("<Control-Key-1>", lambda _e: self._show_section("send"))
-        self.bind_all("<Control-Key-2>", lambda _e: self._show_section("history"))
-        self.bind_all("<Control-Key-3>", lambda _e: self._show_section("settings"))
-
-    # ---- Shell ----
+    # ---- Gerüst ----
 
     def _build_ui(self) -> None:
-        self.grid_columnconfigure(2, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self._nav_frame = self._build_nav()
+        self._nav_frame.pack(side="left", fill="y")
+        self._nav_frame.pack_propagate(False)
 
-        # Sidebar | Divider | Main
-        self._sidebar_frame = self._build_sidebar()
-        self._sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self._content_frame = tk.Frame(self, bg=Theme.BG_LAYER)
+        self._content_frame.pack(side="left", fill="both", expand=True)
 
-        self._divider_frame = tk.Frame(self, bg=Theme.BORDER, width=1)
-        self._divider_frame.grid(row=0, column=1, sticky="ns")
+        body = tk.Frame(self._content_frame, bg=Theme.BG_LAYER)
+        body.pack(fill="both", expand=True)
+        self._body = body
 
-        self._main_frame = tk.Frame(self, bg=Theme.SURFACE)
-        self._main_frame.grid(row=0, column=2, sticky="nsew")
+        self._sections["send"] = self._build_send_section(body)
+        self._sections["history"] = self._build_history_section(body)
+        self._sections["settings"] = self._build_settings_section(body)
 
-        # Sections
-        self._sections["send"] = self._build_send_section(self._main_frame)
-        self._sections["history"] = self._build_history_section(self._main_frame)
-        self._sections["settings"] = self._build_settings_section(self._main_frame)
-
-        self._build_toast()
+        self._build_message_bar()
         self._show_section(self._current_section)
 
-    def _build_sidebar(self) -> tk.Frame:
-        sb = tk.Frame(self, bg=Theme.SIDEBAR, width=self.SIDEBAR_WIDTH)
-        sb.grid_propagate(False)
-        sb.pack_propagate(False)
+    def _build_nav(self) -> tk.Frame:
+        nav = tk.Frame(self, bg=Theme.BG_BASE, width=self.NAV_WIDTH)
 
-        # Brand block
-        brand = tk.Frame(sb, bg=Theme.SIDEBAR)
-        brand.pack(fill="x", padx=24, pady=(28, 36))
-        tk.Label(
-            brand, text="◆", bg=Theme.SIDEBAR, fg=Theme.ACCENT,
-            font=("Segoe UI", 16),
-        ).pack(side="left")
-        tk.Label(
-            brand, text="OneTimeSecret", bg=Theme.SIDEBAR, fg=Theme.TEXT,
-            font=self.f_brand,
-        ).pack(side="left", padx=(12, 0))
+        header = tk.Frame(nav, bg=Theme.BG_BASE)
+        header.pack(fill="x", padx=16, pady=(20, 18))
+        mark = tk.Canvas(header, bg=Theme.BG_BASE, width=20, height=20,
+                         highlightthickness=0, bd=0)
+        mark.pack(side="left")
+        mark.create_polygon(10, 2, 18, 10, 10, 18, 2, 10, fill=Theme.ACCENT, outline="")
+        tk.Label(header, text="OneTimeSecret", bg=Theme.BG_BASE, fg=Theme.TEXT,
+                 font=self.f_body_strong).pack(side="left", padx=(10, 0))
 
-        # Workspace eyebrow
-        tk.Label(
-            sb, text=self.t("sidebar.workspace"), bg=Theme.SIDEBAR,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).pack(anchor="w", padx=24, pady=(0, 10))
+        for name, icon in (("send", "send"), ("history", "history"), ("settings", "settings")):
+            item = NavItem(nav, self.t(f"nav.{name}"), icon,
+                           lambda n=name: self._show_section(n), font_obj=self.f_body)
+            item.pack(fill="x", padx=8, pady=1)
+            self._nav_items[name] = item
 
-        # Nav items
-        nav = tk.Frame(sb, bg=Theme.SIDEBAR)
-        nav.pack(fill="x", padx=10)
-
-        self._nav_items["send"] = NavItem(nav, self.t("nav.send"), "send", self._show_section, icon="✦")
-        self._nav_items["send"].pack(fill="x", pady=(0, 2))
-
-        self._nav_items["history"] = NavItem(nav, self.t("nav.history"), "history", self._show_section, icon="≡")
-        self._nav_items["history"].pack(fill="x", pady=(0, 2))
-
-        self._nav_items["settings"] = NavItem(nav, self.t("nav.settings"), "settings", self._show_section, icon="⚙")
-        self._nav_items["settings"].pack(fill="x", pady=(0, 2))
-
-        # Bottom info block
-        bottom = tk.Frame(sb, bg=Theme.SIDEBAR)
-        bottom.pack(side="bottom", fill="x", padx=24, pady=24)
-
-        tk.Frame(bottom, bg=Theme.BORDER, height=1).pack(fill="x", pady=(0, 18))
-
-        self._sidebar_kv(bottom, self.t("sidebar.region"), _region_label(self.api_host))
-        self._sidebar_kv(bottom, self.t("sidebar.api"), "v2 · stable")
-        self._sidebar_kv(bottom, self.t("sidebar.account"), _truncate(self.settings.api_user or "—", 22))
-
-        return sb
-
-    def _sidebar_kv(self, parent: tk.Misc, key: str, value: str) -> None:
-        tk.Label(parent, text=key, bg=Theme.SIDEBAR, fg=Theme.TEXT_DIM,
-                 font=self.f_eyebrow).pack(anchor="w")
-        tk.Label(parent, text=value, bg=Theme.SIDEBAR, fg=Theme.TEXT_SOFT,
-                 font=self.f_caption).pack(anchor="w", pady=(2, 12))
+        footer = tk.Frame(nav, bg=Theme.BG_BASE)
+        footer.pack(side="bottom", fill="x", padx=20, pady=18)
+        account = self.settings.api_user or self.t("nav.no_account")
+        tk.Label(footer, text=_truncate(account, 26), bg=Theme.BG_BASE,
+                 fg=Theme.TEXT_SECONDARY, font=self.f_caption, anchor="w").pack(fill="x")
+        tk.Label(footer, text=f"{_region_label(self.api_host)} · {self.api_host}",
+                 bg=Theme.BG_BASE, fg=Theme.TEXT_TERTIARY, font=self.f_caption,
+                 anchor="w").pack(fill="x", pady=(2, 0))
+        return nav
 
     def _show_section(self, name: str) -> None:
-        if name not in self._sections:
-            return
         self._current_section = name
-        for s in self._sections.values():
-            s.pack_forget()
+        for section_name, frame in self._sections.items():
+            frame.pack_forget()
+            if section_name in self._nav_items:
+                self._nav_items[section_name].set_active(section_name == name)
         self._sections[name].pack(fill="both", expand=True)
-        for k, item in self._nav_items.items():
-            item.set_active(k == name)
         if name == "history":
             self._render_history()
 
-    # ---- Send section ----
+    # ---- Bausteine ----
+
+    def _page(self, parent: tk.Misc, title: str, subtitle: str = "") -> tuple[tk.Frame, tk.Frame]:
+        """Seitengerüst: Überschrift ohne Augenbraue, darunter der Inhalt."""
+        page = tk.Frame(parent, bg=Theme.BG_LAYER)
+        head = tk.Frame(page, bg=Theme.BG_LAYER)
+        head.pack(fill="x", padx=40, pady=(32, 0))
+        tk.Label(head, text=title, bg=Theme.BG_LAYER, fg=Theme.TEXT,
+                 font=self.f_title, anchor="w").pack(fill="x")
+        if subtitle:
+            tk.Label(head, text=subtitle, bg=Theme.BG_LAYER, fg=Theme.TEXT_SECONDARY,
+                     font=self.f_body, anchor="w", justify="left").pack(fill="x", pady=(6, 0))
+        return page, head
+
+    def _label(self, parent: tk.Misc, text: str, *, hint: str = "") -> tk.Frame:
+        wrap = tk.Frame(parent, bg=parent["bg"])
+        line = tk.Frame(wrap, bg=parent["bg"])
+        line.pack(fill="x")
+        tk.Label(line, text=text, bg=parent["bg"], fg=Theme.TEXT,
+                 font=self.f_body, anchor="w").pack(side="left")
+        if hint:
+            tk.Label(line, text=hint, bg=parent["bg"], fg=Theme.TEXT_TERTIARY,
+                     font=self.f_caption, anchor="w").pack(side="left", padx=(8, 0))
+        return wrap
+
+    def _capped_column(self, parent: tk.Frame, max_width: int = 0) -> tk.Frame:
+        """Inhaltsspalte mit gedeckelter Breite – Formulare bleiben lesbar, auch
+        wenn das Fenster breit gezogen wird."""
+        limit = max_width or self.CONTENT_MAX
+        column = tk.Frame(parent, bg=parent["bg"])
+        column.pack(fill="x", anchor="w")
+
+        def _cap(_e: Optional[tk.Event] = None) -> None:
+            column.pack_configure(padx=(0, max(0, parent.winfo_width() - limit)))
+
+        parent.bind("<Configure>", _cap, add="+")
+        _cap()
+        return column
+
+    def _scrollable(self, parent: tk.Misc) -> tk.Frame:
+        canvas = tk.Canvas(parent, bg=Theme.BG_LAYER, highlightthickness=0, bd=0)
+        bar = ThinScrollbar(parent, canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=Theme.BG_LAYER)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _sync(_e: Optional[tk.Event] = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window, width=canvas.winfo_width())
+
+        inner.bind("<Configure>", _sync)
+        canvas.bind("<Configure>", _sync)
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all(
+            "<MouseWheel>", lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units")))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
+    # ---- Senden ----
 
     def _build_send_section(self, parent: tk.Misc) -> tk.Frame:
-        section = tk.Frame(parent, bg=Theme.SURFACE)
-
-        head = tk.Frame(section, bg=Theme.SURFACE)
-        head.pack(fill="x", padx=46, pady=(40, 28))
-        tk.Label(
-            head, text=self.t("send.eyebrow"), bg=Theme.SURFACE,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).pack(anchor="w")
-        tk.Label(
-            head, text=self.t("send.title"),
-            bg=Theme.SURFACE, fg=Theme.TEXT, font=self.f_title,
-        ).pack(anchor="w", pady=(4, 0))
-        tk.Label(
-            head, text=self.t("send.subtitle"),
-            bg=Theme.SURFACE, fg=Theme.TEXT_MUTED, font=self.f_body,
-        ).pack(anchor="w", pady=(8, 0))
-
-        host = tk.Frame(section, bg=Theme.SURFACE)
-        host.pack(fill="both", expand=True, padx=46, pady=(0, 40))
-
-        self._send_views["form"] = self._build_form_view(host)
-        self._send_views["result"] = self._build_result_view(host)
-        self._show_send_view("form")
-
+        section = tk.Frame(parent, bg=Theme.BG_LAYER)
+        self._send_views["form"] = self._build_form_view(section)
+        self._send_views["result"] = self._build_result_view(section)
+        self._send_views[self._send_view].pack(fill="both", expand=True)
         return section
 
     def _build_form_view(self, parent: tk.Misc) -> tk.Frame:
-        view = tk.Frame(parent, bg=Theme.SURFACE)
-        view.columnconfigure(0, weight=1)
-        view.rowconfigure(3, weight=1, minsize=200)
+        page, _head = self._page(parent, self.t("send.title"), self.t("send.subtitle"))
 
-        # Empfänger
-        self._field_eyebrow(view, self.t("send.recipient"), optional=True).grid(row=0, column=0, sticky="w")
-        self.entry_empf_wrap, self.entry_empf = self._make_entry(view)
-        self.entry_empf_wrap.grid(row=1, column=0, sticky="we", pady=(8, 24))
+        # Aktionszeile zuerst und fest am unteren Rand: die einzige Primäraktion der
+        # Ansicht darf nie herausgedrückt werden. Die Felder darüber scrollen – sonst
+        # verdeckt eine eingeblendete Meldung die untersten Zeilen.
+        actions = tk.Frame(page, bg=Theme.BG_LAYER)
+        actions.pack(side="bottom", fill="x", padx=40, pady=(12, 28))
+        self.submit_btn = Button(actions, self.t("send.create"), self._submit,
+                                 variant="accent", font_obj=self.f_body, min_width=120)
+        self.submit_btn.pack(side="right")
 
-        # Nachricht header
-        msg_row = tk.Frame(view, bg=Theme.SURFACE)
-        msg_row.grid(row=2, column=0, sticky="we", pady=(0, 8))
-        msg_row.columnconfigure(0, weight=1)
-        self._field_eyebrow(msg_row, self.t("send.message")).grid(row=0, column=0, sticky="w")
-        self.counter_label = tk.Label(
-            msg_row, text=self.t("send.chars", n=0), bg=Theme.SURFACE,
-            fg=Theme.TEXT_DIM, font=self.f_caption,
-        )
-        self.counter_label.grid(row=0, column=1, sticky="e")
+        holder = tk.Frame(page, bg=Theme.BG_LAYER)
+        holder.pack(fill="both", expand=True, padx=(40, 24), pady=(24, 0))
+        form = self._capped_column(self._scrollable(holder))
 
-        # Textarea
-        wrap = tk.Frame(view, bg=Theme.BORDER)
-        wrap.grid(row=3, column=0, sticky="nsew")
-        self.txt = tk.Text(
-            wrap, bd=0, relief="flat", wrap="word",
-            bg=Theme.INPUT_BG, fg=Theme.TEXT,
-            insertbackground=Theme.ACCENT,
-            selectbackground=Theme.ACCENT_DIM, selectforeground=Theme.TEXT,
-            font=self.f_body, padx=18, pady=14,
-        )
-        self.txt.pack(fill="both", expand=True, padx=1, pady=1)
+        self._label(form, self.t("send.recipient"), hint=self.t("send.optional")).pack(fill="x")
+        self.entry_recipient = Field(form, font_obj=self.f_body)
+        self.entry_recipient.pack(fill="x", pady=(6, 18))
+
+        message_head = tk.Frame(form, bg=Theme.BG_LAYER)
+        message_head.pack(fill="x")
+        tk.Label(message_head, text=self.t("send.message"), bg=Theme.BG_LAYER,
+                 fg=Theme.TEXT, font=self.f_body).pack(side="left")
+        self.char_label = tk.Label(message_head, text=self.t("send.chars", n=0),
+                                   bg=Theme.BG_LAYER, fg=Theme.TEXT_TERTIARY,
+                                   font=self.f_caption)
+        self.char_label.pack(side="right")
+
+        area = TextArea(form, font_obj=self.f_body, height=150)
+        area.pack(fill="x", pady=(6, 18))
+        self.txt = area.text
         self.txt.bind("<<Modified>>", self._on_text_modified)
-        self.txt.bind("<FocusIn>", lambda _e: wrap.configure(bg=Theme.BORDER_FOCUS))
-        self.txt.bind("<FocusOut>", lambda _e: wrap.configure(bg=Theme.BORDER))
 
-        # TTL
-        self._field_eyebrow(view, self.t("send.ttl")).grid(row=4, column=0, sticky="w", pady=(24, 8))
-        self.pill_bar = PillBar(
-            view, PRESETS, self.settings.default_ttl, lambda _p: None, lang=self.lang,
+        self._label(form, self.t("send.ttl")).pack(fill="x")
+        self.ttl_group = ChoiceGroup(
+            form, [(p.key, p.label(self.lang)) for p in PRESETS],
+            self.settings.default_ttl, lambda _k: None,
+            font_obj=self.f_caption, columns=5,
         )
-        self.pill_bar.grid(row=5, column=0, sticky="w")
+        self.ttl_group.pack(fill="x", pady=(6, 18))
 
-        # Action bar
-        bar = tk.Frame(view, bg=Theme.SURFACE)
-        bar.grid(row=6, column=0, sticky="we", pady=(28, 0))
-        bar.columnconfigure(0, weight=1)
+        self._label(form, self.t("send.passphrase"), hint=self.t("send.optional")).pack(fill="x")
+        tk.Label(form, text=self.t("send.passphrase_hint"), bg=Theme.BG_LAYER,
+                 fg=Theme.TEXT_TERTIARY, font=self.f_caption, anchor="w",
+                 justify="left", wraplength=self.CONTENT_MAX).pack(fill="x", pady=(2, 6))
+        passphrase_row = tk.Frame(form, bg=Theme.BG_LAYER)
+        passphrase_row.pack(fill="x", pady=(0, 24))
+        self.entry_passphrase = Field(passphrase_row, font_obj=self.f_body, show="●")
+        self.entry_passphrase.pack(side="left", fill="x", expand=True)
 
-        self.progress = ttk.Progressbar(
-            bar, mode="indeterminate", style="Accent.Horizontal.TProgressbar",
-        )
-        self.progress.grid(row=0, column=0, sticky="we", padx=(0, 18))
+        def _toggle_passphrase() -> None:
+            hidden = self.entry_passphrase.entry.cget("show") != ""
+            self.entry_passphrase.entry.configure(show="" if hidden else "●")
+            reveal.set_text(self.t("settings.hide") if hidden else self.t("settings.show"))
 
-        self.submit_btn = FlatButton(
-            bar, self.t("send.create"), self._submit,
-            primary=True, font_obj=self.f_button, padx=22, pady=11,
-        )
-        self.submit_btn.grid(row=0, column=1, sticky="e")
-
-        return view
+        reveal = Button(passphrase_row, self.t("settings.show"), _toggle_passphrase,
+                        icon="eye", font_obj=self.f_caption)
+        reveal.pack(side="left", padx=(8, 0))
+        self.passphrase_reveal_btn = reveal
+        return page
 
     def _build_result_view(self, parent: tk.Misc) -> tk.Frame:
-        view = tk.Frame(parent, bg=Theme.SURFACE)
-        view.columnconfigure(0, weight=1)
+        page, _head = self._page(parent, self.t("result.title"), self.t("result.subtitle"))
 
-        # Success header
-        check_row = tk.Frame(view, bg=Theme.SURFACE)
-        check_row.grid(row=0, column=0, sticky="w")
-        tk.Label(
-            check_row, text="✓", bg=Theme.SURFACE, fg=Theme.SUCCESS_FG,
-            font=("Segoe UI", 28),
-        ).pack(side="left", padx=(0, 14))
-        text_block = tk.Frame(check_row, bg=Theme.SURFACE)
-        text_block.pack(side="left")
-        tk.Label(
-            text_block, text=self.t("result.title"),
-            bg=Theme.SURFACE, fg=Theme.TEXT, font=self.f_h2,
-        ).pack(anchor="w")
-        tk.Label(
-            text_block, text=self.t("result.subtitle"),
-            bg=Theme.SURFACE, fg=Theme.TEXT_MUTED, font=self.f_body,
-        ).pack(anchor="w", pady=(2, 0))
+        actions = tk.Frame(page, bg=Theme.BG_LAYER)
+        actions.pack(side="bottom", fill="x", padx=40, pady=(12, 28))
+        Button(actions, self.t("result.new"), self._reset_to_form, variant="accent",
+               font_obj=self.f_body).pack(side="left")
+        Button(actions, self.t("result.status_check"), self._check_last_status,
+               icon="refresh", font_obj=self.f_body).pack(side="left", padx=(8, 0))
+        self.result_burn_btn = Button(actions, self.t("burn.action"), self._burn_last_secret,
+                                      icon="burn", font_obj=self.f_body)
+        self.result_burn_btn.pack(side="left", padx=(8, 0))
 
-        # Link box
-        link_box = tk.Frame(
-            view, bg=Theme.LINK_BG,
-            highlightthickness=1, highlightbackground=Theme.BORDER_STRONG,
-        )
-        link_box.grid(row=1, column=0, sticky="we", pady=(28, 0))
-        link_box.columnconfigure(0, weight=1)
+        holder = tk.Frame(page, bg=Theme.BG_LAYER)
+        holder.pack(fill="both", expand=True, padx=(40, 24), pady=(24, 0))
+        body = self._capped_column(self._scrollable(holder))
 
-        tk.Label(
-            link_box, text=self.t("result.link_label"), bg=Theme.LINK_BG,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 4))
-
+        self._label(body, self.t("result.link_label")).pack(fill="x")
+        link_row = tk.Frame(body, bg=Theme.BG_LAYER)
+        link_row.pack(fill="x", pady=(6, 10))
         self.result_link_var = tk.StringVar()
-        self.result_entry = tk.Entry(
-            link_box, textvariable=self.result_link_var, bd=0,
-            bg=Theme.LINK_BG, fg=Theme.LINK_FG, font=self.f_mono,
-            readonlybackground=Theme.LINK_BG, state="readonly",
-            insertbackground=Theme.LINK_FG,
+        self.result_field = Field(link_row, textvariable=self.result_link_var,
+                                  font_obj=self.f_mono_small, readonly=True)
+        self.result_field.pack(side="left", fill="x", expand=True)
+        Button(link_row, self.t("result.copy"), self._copy_link, icon="copy",
+               font_obj=self.f_body).pack(side="left", padx=(8, 0))
+
+        card = tk.Frame(body, bg=Theme.BG_CARD, highlightthickness=1,
+                        highlightbackground=Theme.STROKE)
+        card.pack(fill="x", pady=(8, 0))
+        inner = tk.Frame(card, bg=Theme.BG_CARD)
+        inner.pack(fill="x", padx=16, pady=14)
+        self.result_state_label = tk.Label(inner, text="", bg=Theme.BG_CARD,
+                                           fg=Theme.ACCENT, font=self.f_body_strong)
+        self.result_state_label.pack(side="left")
+        self.result_status_label = tk.Label(inner, text="", bg=Theme.BG_CARD,
+                                            fg=Theme.TEXT_SECONDARY, font=self.f_body,
+                                            anchor="w")
+        self.result_status_label.pack(side="left", padx=(10, 0))
+
+        self.result_passphrase_label = tk.Label(
+            body, text="", bg=Theme.BG_LAYER, fg=Theme.CAUTION, font=self.f_caption,
+            anchor="w", justify="left", wraplength=self.CONTENT_MAX,
         )
-        self.result_entry.grid(row=1, column=0, sticky="we", padx=18, pady=(0, 14))
+        self.result_passphrase_label.pack(fill="x", pady=(12, 0))
 
-        copy_btn = FlatButton(
-            link_box, self.t("result.copy"), self._copy_link,
-            primary=False, font_obj=self.f_button, padx=18, pady=11,
-        )
-        copy_btn.grid(row=0, column=1, rowspan=2, padx=(0, 14), pady=14)
+        tk.Label(body, text=self.t("result.warning"), bg=Theme.BG_LAYER,
+                 fg=Theme.TEXT_SECONDARY, font=self.f_caption, anchor="w",
+                 justify="left", wraplength=self.CONTENT_MAX).pack(fill="x", pady=(12, 0))
 
-        # Status row
-        status_box = tk.Frame(view, bg=Theme.CARD,
-                              highlightthickness=1, highlightbackground=Theme.BORDER)
-        status_box.grid(row=2, column=0, sticky="we", pady=(20, 0))
-        status_box.columnconfigure(1, weight=1)
-
-        tk.Label(
-            status_box, text=self.t("result.status_label"), bg=Theme.CARD,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 0))
-
-        self.result_status_label = tk.Label(
-            status_box,
-            text=f"●  {self.t('state.new')}  –  {self.t('result.status_waiting')}",
-            bg=Theme.CARD, fg=Theme.ACCENT, font=self.f_body_strong,
-        )
-        self.result_status_label.grid(row=1, column=0, columnspan=2, sticky="w",
-                                       padx=18, pady=(4, 14))
-
-        FlatButton(
-            status_box, self.t("result.status_check"), self._check_last_status,
-            primary=False, font_obj=self.f_caption, padx=14, pady=8,
-        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(0, 14), pady=14)
-
-        # Warning hint
-        tk.Label(
-            view, text=self.t("result.warning"),
-            bg=Theme.SURFACE, fg=Theme.WARNING_FG, font=self.f_caption,
-            wraplength=640, justify="left",
-        ).grid(row=3, column=0, sticky="w", pady=(18, 0))
-
-        # Action row
-        actions = tk.Frame(view, bg=Theme.SURFACE)
-        actions.grid(row=4, column=0, sticky="we", pady=(28, 0))
-        actions.columnconfigure(1, weight=1)
-
-        self.result_burn_btn = FlatButton(
-            actions, self.t("burn.action"), self._burn_last_secret,
-            primary=False, ghost=True, font_obj=self.f_button, padx=18, pady=12,
-        )
-        self.result_burn_btn.grid(row=0, column=0, sticky="w")
-
-        FlatButton(
-            actions, self.t("result.new"), self._reset_to_form,
-            primary=True, font_obj=self.f_button, padx=24, pady=12,
-        ).grid(row=0, column=2, sticky="e")
-
-        return view
+        return page
 
     def _show_send_view(self, view: str) -> None:
-        for v in self._send_views.values():
-            v.pack_forget()
-        self._send_views[view].pack(fill="both", expand=True)
+        self._send_views[self._send_view].pack_forget()
         self._send_view = view
+        self._send_views[view].pack(fill="both", expand=True)
 
-    # ---- History section ----
+    # ---- Verlauf ----
 
     def _build_history_section(self, parent: tk.Misc) -> tk.Frame:
-        section = tk.Frame(parent, bg=Theme.SURFACE)
+        page, head = self._page(parent, self.t("history.title"))
 
-        head = tk.Frame(section, bg=Theme.SURFACE)
-        head.pack(fill="x", padx=46, pady=(40, 28))
+        bar = tk.Frame(head, bg=Theme.BG_LAYER)
+        bar.pack(fill="x", pady=(14, 0))
+        self.history_count = tk.Label(bar, text="", bg=Theme.BG_LAYER,
+                                      fg=Theme.TEXT_SECONDARY, font=self.f_body)
+        self.history_count.pack(side="left")
+        Button(bar, self.t("history.clear"), self._clear_history, icon="delete",
+               variant="subtle", font_obj=self.f_body).pack(side="right")
+        Button(bar, self.t("history.refresh_all"), self._refresh_all_history,
+               icon="refresh", font_obj=self.f_body).pack(side="right", padx=(0, 8))
 
-        title_block = tk.Frame(head, bg=Theme.SURFACE)
-        title_block.pack(side="left")
-        tk.Label(
-            title_block, text=self.t("history.eyebrow"), bg=Theme.SURFACE,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).pack(anchor="w")
-        tk.Label(
-            title_block, text=self.t("history.title"),
-            bg=Theme.SURFACE, fg=Theme.TEXT, font=self.f_title,
-        ).pack(anchor="w", pady=(4, 0))
-        self.history_count_label = tk.Label(
-            title_block, text=self.t("history.count_many", n=0),
-            bg=Theme.SURFACE, fg=Theme.TEXT_MUTED, font=self.f_body,
-        )
-        self.history_count_label.pack(anchor="w", pady=(8, 0))
+        holder = tk.Frame(page, bg=Theme.BG_LAYER)
+        holder.pack(fill="both", expand=True, padx=(40, 24), pady=(18, 24))
+        self._history_container = self._scrollable(holder)
+        return page
 
-        actions = tk.Frame(head, bg=Theme.SURFACE)
-        actions.pack(side="right", anchor="ne", pady=(28, 0))
-        FlatButton(
-            actions, self.t("history.clear"), self._clear_history,
-            ghost=True, font_obj=self.f_caption, padx=14, pady=8,
-        ).pack(side="right", padx=(8, 0))
-        FlatButton(
-            actions, self.t("history.refresh_all"), self._refresh_all_history,
-            primary=False, font_obj=self.f_caption, padx=14, pady=8,
-        ).pack(side="right")
+    def _render_history(self) -> None:
+        for widget in self._history_container.winfo_children():
+            widget.destroy()
 
-        # Scrollable list
-        list_wrap = tk.Frame(section, bg=Theme.SURFACE)
-        list_wrap.pack(fill="both", expand=True, padx=46, pady=(0, 40))
+        entries = self.history.entries()
+        count_key = "history.count_one" if len(entries) == 1 else "history.count_many"
+        self.history_count.configure(text=self.t(count_key, n=len(entries)))
 
-        canvas = tk.Canvas(list_wrap, bg=Theme.SURFACE, highlightthickness=0, bd=0)
-        scrollbar = ThinScrollbar(list_wrap, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y", padx=(4, 0))
+        if not entries:
+            self._render_history_empty()
+            return
+        for entry in entries:
+            self._make_history_row(self._history_container, entry).pack(
+                fill="x", pady=(0, 8), padx=(0, 8))
 
-        inner = tk.Frame(canvas, bg=Theme.SURFACE)
-        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+    def _render_history_empty(self) -> None:
+        """Leerzustand erklärt den nächsten Schritt, statt Leere zu melden."""
+        box = tk.Frame(self._history_container, bg=Theme.BG_LAYER)
+        box.pack(fill="x", pady=(40, 0))
+        tk.Label(box, text=self.t("history.empty_title"), bg=Theme.BG_LAYER,
+                 fg=Theme.TEXT, font=self.f_subtitle).pack(anchor="w")
+        tk.Label(box, text=self.t("history.empty_sub"), bg=Theme.BG_LAYER,
+                 fg=Theme.TEXT_SECONDARY, font=self.f_body, anchor="w",
+                 justify="left").pack(anchor="w", pady=(6, 14))
+        Button(box, self.t("history.empty_action"), lambda: self._show_section("send"),
+               variant="accent", font_obj=self.f_body).pack(anchor="w")
 
-        def _sync(_e: Optional[tk.Event] = None) -> None:
-            canvas.update_idletasks()
-            bbox = canvas.bbox("all")
-            if bbox:
-                canvas.configure(scrollregion=bbox)
+    def _make_history_row(self, parent: tk.Misc, entry: HistoryEntry) -> tk.Frame:
+        color, label = self._state_visual(entry.last_state)
+        row = tk.Frame(parent, bg=Theme.BG_CARD, highlightthickness=1,
+                       highlightbackground=Theme.STROKE)
 
-        def _on_canvas_resize(e: tk.Event) -> None:
-            canvas.itemconfigure(win, width=e.width)
-            _sync()
+        top = tk.Frame(row, bg=Theme.BG_CARD)
+        top.pack(fill="x", padx=16, pady=(14, 0))
 
-        inner.bind("<Configure>", _sync)
-        canvas.bind("<Configure>", _on_canvas_resize)
+        tk.Label(top, text=label, bg=Theme.BG_CARD, fg=color,
+                 font=self.f_body_strong).pack(side="left")
+        tk.Label(top, text=self._format_time(entry.created_at), bg=Theme.BG_CARD,
+                 fg=Theme.TEXT_SECONDARY, font=self.f_mono_small).pack(side="right")
 
-        def _wheel(e: tk.Event) -> None:
-            canvas.yview_scroll(int(-e.delta / 120), "units")
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _wheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        meta = self._format_meta(entry)
+        if meta:
+            tk.Label(row, text=meta, bg=Theme.BG_CARD, fg=Theme.TEXT_TERTIARY,
+                     font=self.f_caption, anchor="w", justify="left").pack(
+                fill="x", padx=16, pady=(6, 0))
 
-        self._history_canvas = canvas
-        self._history_container = inner
+        actions = tk.Frame(row, bg=Theme.BG_CARD)
+        actions.pack(fill="x", padx=12, pady=(10, 10))
+        identifier = entry.metadata_identifier
 
-        return section
+        Button(actions, self.t("history.row.status"),
+               lambda i=identifier: self._refresh_history_entry(i),
+               icon="refresh", variant="subtle", font_obj=self.f_caption).pack(side="left")
+        Button(actions, self.t("history.row.page"),
+               lambda i=identifier or entry.metadata_key: self._open_status_link(i),
+               icon="external", variant="subtle", font_obj=self.f_caption).pack(
+            side="left", padx=(4, 0))
+        if self._is_burnable(entry.last_state):
+            Button(actions, self.t("history.row.share"),
+                   lambda i=identifier: self._copy_share_link(i),
+                   icon="link", variant="subtle", font_obj=self.f_caption).pack(
+                side="left", padx=(4, 0))
+            Button(actions, self.t("history.row.burn"),
+                   lambda i=identifier: self._burn_secret(i),
+                   icon="burn", variant="subtle", font_obj=self.f_caption).pack(
+                side="left", padx=(4, 0))
+        Button(actions, "", lambda i=identifier: self._delete_history_entry(i),
+               icon="remove", variant="subtle", icon_only=True,
+               font_obj=self.f_caption).pack(side="right")
+        return row
 
-    # ---- Settings section ----
+    def _state_visual(self, state: str) -> tuple[str, str]:
+        key = (state or "unknown").lower()
+        colors = {
+            STATE_NEW: Theme.ACCENT,
+            "shared": Theme.ACCENT,
+            "previewed": Theme.CAUTION,
+            "viewed": Theme.CAUTION,
+            "revealed": Theme.SUCCESS,
+            "received": Theme.SUCCESS,
+            "burned": Theme.DANGER,
+            "expired": Theme.TEXT_TERTIARY,
+            "orphaned": Theme.TEXT_TERTIARY,
+        }
+        color = colors.get(key, Theme.TEXT_TERTIARY)
+        label_key = f"state.{key}"
+        label = self.t(label_key) if label_key in STRINGS else key
+        return color, label
+
+    @staticmethod
+    def _format_time(iso_str: str) -> str:
+        try:
+            moment = datetime.fromisoformat(iso_str).astimezone()
+        except (ValueError, TypeError):
+            return iso_str or "–"
+        return moment.strftime("%d.%m.%Y  %H:%M")
+
+    def _ttl_label(self, entry: HistoryEntry) -> str:
+        """Die Sekunden sind die verlässliche Angabe; das gespeicherte Label ist nur
+        der Fallback für Einträge aus älteren Versionen."""
+        preset = preset_for_seconds(entry.ttl_seconds)
+        if preset:
+            return preset.label(self.lang)
+        legacy = LEGACY_TTL_LABELS.get(entry.ttl_label)
+        return preset_for_key(legacy).label(self.lang) if legacy else entry.ttl_label
+
+    def _format_meta(self, entry: HistoryEntry) -> str:
+        bits: list[str] = []
+        if entry.recipient:
+            bits.append(self.t("history.meta.to", recipient=entry.recipient))
+        ttl = self._ttl_label(entry)
+        if ttl:
+            bits.append(self.t("history.meta.ttl", ttl=ttl))
+        if entry.has_passphrase:
+            bits.append(self.t("history.meta.passphrase"))
+        if entry.last_checked and entry.last_checked != entry.created_at:
+            bits.append(self.t("history.meta.checked", time=self._format_time(entry.last_checked)))
+        return "   ·   ".join(bits)
+
+    # ---- Einstellungen ----
+
+    def _settings_card(self, parent: tk.Misc, title: str, description: str = "") -> tk.Frame:
+        """Eine Einstellungskarte wie in den Windows-Einstellungen: Beschriftung
+        links, Steuerelement rechts oder darunter."""
+        card = tk.Frame(parent, bg=Theme.BG_CARD, highlightthickness=1,
+                        highlightbackground=Theme.STROKE)
+        card.pack(fill="x", pady=(0, 8))
+        head = tk.Frame(card, bg=Theme.BG_CARD)
+        head.pack(fill="x", padx=16, pady=(14, 0))
+        tk.Label(head, text=title, bg=Theme.BG_CARD, fg=Theme.TEXT,
+                 font=self.f_body, anchor="w").pack(fill="x")
+        if description:
+            tk.Label(head, text=description, bg=Theme.BG_CARD, fg=Theme.TEXT_TERTIARY,
+                     font=self.f_caption, anchor="w", justify="left",
+                     wraplength=self.CONTENT_MAX - 40).pack(fill="x", pady=(2, 0))
+        body = tk.Frame(card, bg=Theme.BG_CARD)
+        body.pack(fill="x", padx=16, pady=(10, 14))
+        return body
 
     def _build_settings_section(self, parent: tk.Misc) -> tk.Frame:
-        section = tk.Frame(parent, bg=Theme.SURFACE)
+        page, _head = self._page(parent, self.t("settings.title"), self.t("settings.subtitle"))
+        holder = tk.Frame(page, bg=Theme.BG_LAYER)
+        holder.pack(fill="both", expand=True, padx=(40, 24), pady=(20, 24))
+        form = self._scrollable(holder)
 
-        # Header
-        head = tk.Frame(section, bg=Theme.SURFACE)
-        head.pack(fill="x", padx=46, pady=(40, 28))
-        tk.Label(
-            head, text=self.t("settings.eyebrow"), bg=Theme.SURFACE,
-            fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-        ).pack(anchor="w")
-        tk.Label(
-            head, text=self.t("settings.title"),
-            bg=Theme.SURFACE, fg=Theme.TEXT, font=self.f_title,
-        ).pack(anchor="w", pady=(4, 0))
-        tk.Label(
-            head, text=self.t("settings.subtitle"),
-            bg=Theme.SURFACE, fg=Theme.TEXT_MUTED, font=self.f_body,
-        ).pack(anchor="w", pady=(8, 0))
-
-        # Scrollable form
-        wrap = tk.Frame(section, bg=Theme.SURFACE)
-        wrap.pack(fill="both", expand=True, padx=46, pady=(0, 40))
-
-        canvas = tk.Canvas(wrap, bg=Theme.SURFACE, highlightthickness=0, bd=0)
-        sb = ThinScrollbar(wrap, command=canvas.yview)
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y", padx=(4, 0))
-
-        form = tk.Frame(canvas, bg=Theme.SURFACE)
-        win = canvas.create_window((0, 0), window=form, anchor="nw")
-
-        def _sync_sb(_e: Optional[tk.Event] = None) -> None:
-            canvas.update_idletasks()
-            bbox = canvas.bbox("all")
-            if bbox:
-                canvas.configure(scrollregion=bbox)
-
-        def _on_canvas_resize(e: tk.Event) -> None:
-            canvas.itemconfigure(win, width=e.width)
-            _sync_sb()
-
-        form.bind("<Configure>", _sync_sb)
-        canvas.bind("<Configure>", _on_canvas_resize)
-
-        def _wheel(e: tk.Event) -> None:
-            canvas.yview_scroll(int(-e.delta / 120), "units")
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _wheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
-
-        # ---- Form widgets ----
+        column = self._capped_column(form)
 
         url_var = tk.StringVar(value=self.settings.api_url)
         user_var = tk.StringVar(value=self.settings.api_user)
@@ -2065,184 +2535,77 @@ class App(tk.Tk):
         lang_var = tk.StringVar(value=self.lang)
         ttl_var = tk.StringVar(value=self.settings.default_ttl)
 
-        # Region
-        self._field_eyebrow(form, self.t("settings.region")).pack(anchor="w", pady=(4, 8))
-        region_options = [(k, label) for k, (label, _host) in REGIONS.items()]
-        region_pills = self._build_option_pills(form, region_options, region_var)
-        region_pills.pack(anchor="w")
+        body = self._settings_card(column, self.t("settings.user"))
+        user_field = Field(body, textvariable=user_var, font_obj=self.f_body)
+        user_field.pack(fill="x")
 
-        # API URL
-        self._field_eyebrow(form, self.t("settings.url")).pack(anchor="w", pady=(22, 8))
-        url_wrap, url_entry = self._make_entry(form)
-        url_entry.configure(textvariable=url_var)
-        url_wrap.pack(fill="x")
-
-        def _on_region_change() -> None:
-            new_region = region_var.get()
-            if new_region != "custom":
-                url_var.set(build_api_url(new_region))
-
-        region_pills.bind_change(_on_region_change)
-
-        # User
-        self._field_eyebrow(form, self.t("settings.user")).pack(anchor="w", pady=(22, 8))
-        user_wrap, user_entry = self._make_entry(form)
-        user_entry.configure(textvariable=user_var)
-        user_wrap.pack(fill="x")
-
-        # Key
-        self._field_eyebrow(form, self.t("settings.key")).pack(anchor="w", pady=(22, 8))
-        key_row = tk.Frame(form, bg=Theme.SURFACE)
+        body = self._settings_card(
+            column, self.t("settings.key"),
+            self.t("settings.keyring_yes") if self.settings_store.keyring_available
+            else self.t("settings.keyring_no"))
+        key_row = tk.Frame(body, bg=Theme.BG_CARD)
         key_row.pack(fill="x")
-        key_row.columnconfigure(0, weight=1)
-        key_wrap, key_entry = self._make_entry(key_row)
-        key_entry.configure(textvariable=key_var, show="●")
-        key_wrap.grid(row=0, column=0, sticky="we")
+        key_field = Field(key_row, textvariable=key_var, font_obj=self.f_mono_small, show="●")
+        key_field.pack(side="left", fill="x", expand=True)
 
-        toggle_btn = FlatButton(
-            key_row, self.t("settings.show"),
-            on_click=lambda: None,  # set below
-            primary=False, font_obj=self.f_caption, padx=14, pady=10,
-        )
+        def _toggle_key() -> None:
+            hidden = key_field.entry.cget("show") != ""
+            key_field.entry.configure(show="" if hidden else "●")
+            show_btn.set_text(self.t("settings.hide") if hidden else self.t("settings.show"))
 
-        def _toggle_key_visible() -> None:
-            current_show = key_entry.cget("show")
-            if current_show:
-                key_entry.configure(show="")
-                toggle_btn.set_text(self.t("settings.hide"))
-            else:
-                key_entry.configure(show="●")
-                toggle_btn.set_text(self.t("settings.show"))
-        toggle_btn._on_click = _toggle_key_visible  # type: ignore[attr-defined]
-        toggle_btn.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        show_btn = Button(key_row, self.t("settings.show"), _toggle_key, icon="eye",
+                          font_obj=self.f_caption)
+        show_btn.pack(side="left", padx=(8, 0))
 
-        # Keyring info
-        keyring_msg = (self.t("settings.keyring_yes")
-                       if self.settings_store.keyring_available
-                       else self.t("settings.keyring_no"))
-        keyring_color = Theme.SUCCESS_FG if self.settings_store.keyring_available else Theme.WARNING_FG
-        tk.Label(
-            form, text=keyring_msg, bg=Theme.SURFACE, fg=keyring_color,
-            font=self.f_caption, justify="left", anchor="w", wraplength=620,
-        ).pack(anchor="w", pady=(8, 0))
+        body = self._settings_card(column, self.t("settings.region"))
+        region_group = ChoiceGroup(
+            body, [(k, label) for k, (label, _host) in REGIONS.items()],
+            region_var.get(), lambda key: _on_region(key), font_obj=self.f_caption, columns=4)
+        region_group.pack(fill="x")
 
-        # Language
-        self._field_eyebrow(form, self.t("settings.language")).pack(anchor="w", pady=(28, 8))
-        lang_options = [(k, label) for k, label in LANGUAGES]
-        lang_pills = self._build_option_pills(form, lang_options, lang_var)
-        lang_pills.pack(anchor="w")
+        body = self._settings_card(column, self.t("settings.url"))
+        url_field = Field(body, textvariable=url_var, font_obj=self.f_mono_small)
+        url_field.pack(fill="x")
 
-        # Default TTL
-        self._field_eyebrow(form, self.t("settings.default_ttl")).pack(anchor="w", pady=(28, 8))
-        ttl_options = [(p.key, p.label(self.lang)) for p in PRESETS]
-        ttl_pills = self._build_option_pills(form, ttl_options, ttl_var)
-        ttl_pills.pack(anchor="w")
+        def _on_region(key: str) -> None:
+            region_var.set(key)
+            if key != "custom":
+                url_var.set(build_api_url(key))
 
-        # Advanced
-        tk.Frame(form, bg=Theme.BORDER, height=1).pack(fill="x", pady=(32, 18))
-        self._field_eyebrow(form, self.t("settings.advanced")).pack(anchor="w")
+        body = self._settings_card(column, self.t("settings.language"))
+        ChoiceGroup(body, list(LANGUAGES), lang_var.get(), lang_var.set,
+                    font_obj=self.f_caption, columns=4).pack(fill="x")
 
-        self._field_eyebrow(form, self.t("settings.timeout")).pack(anchor="w", pady=(18, 8))
-        timeout_wrap, timeout_entry = self._make_entry(form)
-        timeout_entry.configure(textvariable=timeout_var, width=10)
-        timeout_wrap.pack(anchor="w")
+        body = self._settings_card(column, self.t("settings.default_ttl"))
+        ChoiceGroup(body, [(p.key, p.label(self.lang)) for p in PRESETS],
+                    ttl_var.get(), ttl_var.set, font_obj=self.f_caption,
+                    columns=5).pack(fill="x")
 
-        # Buttons
-        actions = tk.Frame(form, bg=Theme.SURFACE)
-        actions.pack(fill="x", pady=(36, 0))
-        actions.columnconfigure(0, weight=1)
+        body = self._settings_card(column, self.t("settings.timeout"),
+                                   self.t("settings.timeout_hint"))
+        timeout_field = Field(body, textvariable=timeout_var, font_obj=self.f_body)
+        timeout_field.pack(anchor="w")
+        timeout_field.configure(width=120)
 
-        FlatButton(
-            actions, self.t("settings.reset"),
-            on_click=lambda: self._reset_settings(),
-            ghost=True, font_obj=self.f_button, padx=18, pady=11,
-        ).pack(side="left")
+        actions = tk.Frame(column, bg=Theme.BG_LAYER)
+        actions.pack(fill="x", pady=(16, 0))
+        Button(actions, self.t("settings.save"),
+               lambda: self._save_settings(
+                   url_var.get().strip(), user_var.get().strip(), key_var.get().strip(),
+                   region_var.get(), lang_var.get(), timeout_var.get().strip(), ttl_var.get()),
+               variant="accent", font_obj=self.f_body, min_width=110).pack(side="left")
+        self.test_btn = Button(actions, self.t("settings.test"),
+                               lambda: self._test_connection(
+                                   url_var.get().strip(), user_var.get().strip(),
+                                   key_var.get().strip()),
+                               font_obj=self.f_body)
+        self.test_btn.pack(side="left", padx=(8, 0))
+        Button(actions, self.t("settings.reset"), self._reset_settings,
+               variant="subtle", font_obj=self.f_body).pack(side="right")
+        return page
 
-        self.test_btn = FlatButton(
-            actions, self.t("settings.test"),
-            on_click=lambda: self._test_connection(
-                url_var.get().strip(), user_var.get().strip(), key_var.get().strip(),
-            ),
-            primary=False, font_obj=self.f_button, padx=18, pady=11,
-        )
-        self.test_btn.pack(side="left", padx=(10, 0))
-
-        FlatButton(
-            actions, self.t("settings.save"),
-            on_click=lambda: self._save_settings(
-                url_var.get().strip(),
-                user_var.get().strip(),
-                key_var.get().strip(),
-                region_var.get(),
-                lang_var.get(),
-                timeout_var.get().strip(),
-                ttl_var.get(),
-            ),
-            primary=True, font_obj=self.f_button, padx=22, pady=11,
-        ).pack(side="right")
-
-        return section
-
-    def _build_option_pills(
-        self,
-        parent: tk.Misc,
-        options: list[tuple[str, str]],
-        var: tk.StringVar,
-    ) -> tk.Frame:
-        bar = tk.Frame(parent, bg=Theme.SURFACE)
-        labels: dict[str, tk.Label] = {}
-        change_callbacks: list[Callable[[], None]] = []
-
-        def refresh() -> None:
-            current = var.get()
-            for key, lbl in labels.items():
-                if key == current:
-                    lbl.configure(bg=Theme.ACCENT_DIM, fg=Theme.ACCENT)
-                else:
-                    lbl.configure(bg=Theme.SURFACE, fg=Theme.TEXT_MUTED)
-
-        def select(key: str) -> None:
-            var.set(key)
-            refresh()
-            for cb in change_callbacks:
-                try:
-                    cb()
-                except Exception:
-                    logger.exception("option pill callback failed")
-
-        for key, label in options:
-            pill = tk.Label(
-                bar, text=label, bg=Theme.SURFACE, fg=Theme.TEXT_MUTED,
-                font=("Segoe UI", 9), padx=14, pady=7, cursor="hand2",
-            )
-            pill.pack(side="left", padx=(0, 6))
-            pill.bind("<Button-1>", lambda _e, k=key: select(k))
-
-            def hover(label_widget: tk.Label, k: str, entering: bool) -> None:
-                if k == var.get():
-                    return
-                label_widget.configure(
-                    bg=Theme.CARD if entering else Theme.SURFACE,
-                    fg=Theme.TEXT if entering else Theme.TEXT_MUTED,
-                )
-            pill.bind("<Enter>", lambda _e, w=pill, k=key: hover(w, k, True))
-            pill.bind("<Leave>", lambda _e, w=pill, k=key: hover(w, k, False))
-            labels[key] = pill
-
-        bar.bind_change = lambda cb: change_callbacks.append(cb)  # type: ignore[attr-defined]
-        refresh()
-        return bar
-
-    def _save_settings(
-        self,
-        url: str,
-        user: str,
-        key: str,
-        region: str,
-        language: str,
-        timeout_str: str,
-        default_ttl: str,
-    ) -> None:
+    def _save_settings(self, url: str, user: str, key: str, region: str,
+                       language: str, timeout_str: str, default_ttl: str) -> None:
         try:
             timeout = int(timeout_str or REQUEST_TIMEOUT_SECONDS)
             if timeout <= 0:
@@ -2250,7 +2613,6 @@ class App(tk.Tk):
         except ValueError:
             timeout = REQUEST_TIMEOUT_SECONDS
 
-        # Region != custom: URL auto-bestimmen.
         if region != "custom":
             url = build_api_url(region)
 
@@ -2266,7 +2628,7 @@ class App(tk.Tk):
         try:
             storage = self.settings_store.save(new_settings)
         except OSError as exc:
-            self._show_toast(str(exc), ok=False)
+            self._show_message(str(exc), "error")
             return
 
         self._apply_settings(self.settings_store.current)
@@ -2277,274 +2639,85 @@ class App(tk.Tk):
         """Meldet, wo der Key tatsächlich gelandet ist – eine pauschale
         Sicherheitszusage wäre falsch, wenn der Keyring-Schreibversuch scheiterte."""
         if storage == KEY_STORAGE_FAILED:
-            self._show_toast(self.t("settings.key_not_stored"), ok=False, duration=6000)
+            self._show_message(self.t("settings.key_not_stored"), "error")
         elif storage == KEY_STORAGE_FILE:
-            self._show_toast(self.t("settings.saved_plaintext"), ok=False, duration=5000)
+            self._show_message(self.t("settings.saved_plaintext"), "warning")
         else:
-            self._show_toast(self.t("settings.saved"), ok=True)
+            self._show_message(self.t("settings.saved"), "success")
 
     def _reset_settings(self) -> None:
-        defaults = Settings.defaults()
+        if not messagebox.askyesno(self.t("settings.reset"), self.t("settings.reset_confirm"),
+                                   icon="warning", default="no", parent=self):
+            return
         try:
-            self.settings_store.save(defaults)
+            self.settings_store.save(Settings.defaults())
         except OSError as exc:
-            self._show_toast(str(exc), ok=False)
+            self._show_message(str(exc), "error")
             return
         self._apply_settings(self.settings_store.current)
         self._rebuild_ui(stay_on="settings")
-        self._show_toast(self.t("settings.reset_done"), ok=True)
+        self._show_message(self.t("settings.reset_done"), "success")
 
     def _rebuild_ui(self, *, stay_on: Optional[str] = None) -> None:
         if stay_on:
             self._current_section = stay_on
-        for w in (self._sidebar_frame, self._divider_frame, self._main_frame):
-            if w is not None:
-                # Widget may already be destroyed by Tk teardown; best-effort cleanup.
+        for widget in (self._nav_frame, self._content_frame):
+            if widget is not None:
                 with suppress(Exception):
-                    w.destroy()
-        if hasattr(self, "toast"):
-            # Toast may already be gone; best-effort cleanup.
-            with suppress(Exception):
-                self.toast.destroy()
+                    widget.destroy()
         self._nav_items.clear()
         self._sections.clear()
         self._send_views.clear()
+        self._send_view = "form"
         self._last_metadata_identifier = ""
         self._build_ui()
 
-    def _render_history(self) -> None:
-        for w in self._history_container.winfo_children():
-            w.destroy()
+    # ---- Meldungen ----
 
-        entries = self.history.entries()
-        n = len(entries)
-        if hasattr(self, "history_count_label"):
-            key = "history.count_one" if n == 1 else "history.count_many"
-            self.history_count_label.configure(text=self.t(key, n=n))
+    def _build_message_bar(self) -> None:
+        self._message_holder = tk.Frame(self._content_frame, bg=Theme.BG_LAYER)
+        self.message_bar = InfoBar(self._message_holder, font_obj=self.f_body,
+                                   on_close=self._hide_message)
+        self.message_bar.pack(fill="x")
+        # Nicht packen: die Leiste erscheint erst bei einer Meldung – und dann
+        # `before=self._body`, sonst hat der expandierende Inhalt den Platz schon.
 
-        if not entries:
-            empty = tk.Frame(self._history_container, bg=Theme.SURFACE)
-            empty.pack(fill="x", pady=80)
-            tk.Label(
-                empty, text="—", bg=Theme.SURFACE, fg=Theme.TEXT_DIM,
-                font=("Segoe UI", 32),
-            ).pack()
-            tk.Label(
-                empty, text=self.t("history.empty_title"),
-                bg=Theme.SURFACE, fg=Theme.TEXT_MUTED, font=self.f_h2,
-            ).pack(pady=(14, 4))
-            tk.Label(
-                empty, text=self.t("history.empty_sub"),
-                bg=Theme.SURFACE, fg=Theme.TEXT_DIM, font=self.f_body,
-            ).pack()
-        else:
-            for entry in entries:
-                self._make_history_row(self._history_container, entry).pack(
-                    fill="x", pady=(0, 1),
-                )
-
-        self._history_container.update_idletasks()
-        bbox = self._history_canvas.bbox("all")
-        if bbox:
-            self._history_canvas.configure(scrollregion=bbox)
-
-    def _make_history_row(self, parent: tk.Misc, entry: HistoryEntry) -> tk.Frame:
-        row = tk.Frame(
-            parent, bg=Theme.CARD,
-            highlightthickness=1, highlightbackground=Theme.BORDER,
-        )
-        row.columnconfigure(2, weight=1)
-
-        state_color, state_label = self._state_visual(entry.last_state)
-
-        # Status dot column
-        dot = tk.Label(
-            row, text="●", bg=Theme.CARD, fg=state_color,
-            font=("Segoe UI", 12),
-        )
-        dot.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(20, 0))
-
-        # State eyebrow
-        tk.Label(
-            row, text=state_label.upper(), bg=Theme.CARD, fg=state_color,
-            font=self.f_eyebrow,
-        ).grid(row=0, column=1, sticky="w", padx=(14, 0), pady=(14, 0))
-
-        # Time (primary line)
-        tk.Label(
-            row, text=self._format_time(entry.created_at),
-            bg=Theme.CARD, fg=Theme.TEXT, font=self.f_body_strong,
-        ).grid(row=0, column=2, sticky="w", padx=(14, 14), pady=(14, 0))
-
-        # Actions
-        actions = tk.Frame(row, bg=Theme.CARD)
-        actions.grid(row=0, column=3, rowspan=2, sticky="e", padx=(0, 14), pady=10)
-        FlatButton(
-            actions, self.t("history.row.status"),
-            lambda i=entry.metadata_identifier: self._refresh_history_entry(i),
-            primary=False, font_obj=self.f_caption, padx=12, pady=6,
-        ).pack(side="left", padx=2)
-        FlatButton(
-            actions, self.t("history.row.link"),
-            lambda i=entry.metadata_identifier or entry.metadata_key: self._open_status_link(i),
-            primary=False, font_obj=self.f_caption, padx=12, pady=6,
-        ).pack(side="left", padx=2)
-        if self._is_burnable(entry.last_state):
-            FlatButton(
-                actions, self.t("history.row.share"),
-                lambda i=entry.metadata_identifier: self._copy_share_link(i),
-                primary=False, font_obj=self.f_caption, padx=12, pady=6,
-            ).pack(side="left", padx=2)
-            FlatButton(
-                actions, self.t("history.row.burn"),
-                lambda i=entry.metadata_identifier: self._burn_secret(i),
-                primary=False, ghost=True, font_obj=self.f_caption, padx=12, pady=6,
-            ).pack(side="left", padx=2)
-        FlatButton(
-            actions, "×",
-            lambda i=entry.metadata_identifier: self._delete_history_entry(i),
-            ghost=True, font_obj=self.f_caption, padx=10, pady=6,
-        ).pack(side="left", padx=2)
-
-        # Meta line
-        meta_text = self._format_meta(entry)
-        if meta_text:
-            tk.Label(
-                row, text=meta_text, bg=Theme.CARD, fg=Theme.TEXT_MUTED,
-                font=self.f_caption, justify="left", anchor="w",
-            ).grid(row=1, column=1, columnspan=2, sticky="w",
-                   padx=(14, 14), pady=(4, 14))
-        else:
-            tk.Frame(row, bg=Theme.CARD, height=14).grid(row=1, column=1, sticky="we")
-
-        return row
-
-    def _state_visual(self, state: str) -> tuple[str, str]:
-        s = (state or "").lower()
-        color_map = {
-            "new":       Theme.ACCENT,
-            "shared":    Theme.ACCENT,
-            "previewed": Theme.WARNING_FG,
-            "revealed":  Theme.SUCCESS_FG,
-            "burned":    Theme.SUCCESS_FG,
-            "expired":   Theme.TEXT_DIM,
-            "orphaned":  Theme.ERROR_FG,
-            "unknown":   Theme.ERROR_FG,
-            "":          Theme.ERROR_FG,
-        }
-        color = color_map.get(s, Theme.TEXT_MUTED)
-        label_key = f"state.{s}" if s else "state.unknown"
-        label = t(label_key, self.lang) if label_key in STRINGS else (s or self.t("state.unknown"))
-        return color, label
-
-    @staticmethod
-    def _format_time(iso_str: str) -> str:
-        try:
-            dt = datetime.fromisoformat(iso_str)
-        except ValueError:
-            return iso_str
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone().strftime("%d.%m.%Y  %H:%M")
-
-    def _format_meta(self, entry: HistoryEntry) -> str:
-        bits: list[str] = []
-        if entry.recipient:
-            bits.append(self.t("history.meta.to", recipient=entry.recipient))
-        ttl = self._ttl_label(entry)
-        if ttl:
-            bits.append(self.t("history.meta.ttl", ttl=ttl))
-        if entry.last_checked and entry.last_checked != entry.created_at:
-            bits.append(self.t("history.meta.checked", time=self._format_time(entry.last_checked)))
-        return "    ·    ".join(bits)
-
-    def _ttl_label(self, entry: HistoryEntry) -> str:
-        """Die Sekunden sind die verlässliche Angabe; das gespeicherte Label ist nur
-        der Fallback für Einträge aus älteren Versionen."""
-        preset = preset_for_seconds(entry.ttl_seconds)
-        if preset:
-            return preset.label(self.lang)
-        legacy = LEGACY_TTL_LABELS.get(entry.ttl_label)
-        return preset_for_key(legacy).label(self.lang) if legacy else entry.ttl_label
-
-    # ---- Toast ----
-
-    def _build_toast(self) -> None:
-        self.toast = tk.Label(
-            self, text="", bg=Theme.SUCCESS_BG, fg=Theme.SUCCESS_FG,
-            padx=18, pady=11, font=self.f_body,
-            highlightthickness=1, highlightbackground=Theme.SUCCESS_BORDER,
-        )
-        self.toast.place_forget()
-
-    def _show_toast(self, text: str, *, ok: bool, duration: int = 2800) -> None:
-        bg = Theme.SUCCESS_BG if ok else Theme.ERROR_BG
-        fg = Theme.SUCCESS_FG if ok else Theme.ERROR_FG
-        border = Theme.SUCCESS_BORDER if ok else Theme.ERROR_BORDER
-        self.toast.configure(text=text, bg=bg, fg=fg,
-                             highlightbackground=border, highlightcolor=border)
-        self.toast.place(relx=0.5, rely=1.0, anchor="s", y=-22)
-        self.toast.lift()
-        if self._toast_job is not None:
-            # Scheduled callback may have already fired; ignore.
+    def _show_message(self, text: str, severity: str = "info", *,
+                      duration: Optional[int] = None) -> None:
+        """Eine Meldung bleibt stehen, bis sie geschlossen oder ersetzt wird.
+        Nur Bestätigungen verschwinden von selbst – ein Fehler wartet auf Lesen."""
+        if self._message_job is not None:
             with suppress(Exception):
-                self.after_cancel(self._toast_job)
-        self._toast_job = self.after(duration, self.toast.place_forget)
+                self.after_cancel(self._message_job)
+            self._message_job = None
+        self.message_bar.show(text, severity)
+        self._message_holder.pack(side="bottom", fill="x", padx=40, pady=(12, 20),
+                                  before=self._body)
+        if duration is None:
+            duration = 4000 if severity == "success" else 0
+        if duration:
+            self._message_job = self.after(duration, self._hide_message)
 
-    # ---- Form helpers ----
+    def _hide_message(self) -> None:
+        self._message_job = None
+        self._message_holder.pack_forget()
 
-    def _field_eyebrow(self, parent: tk.Misc, text: str, *, optional: bool = False) -> tk.Frame:
-        row = tk.Frame(parent, bg=parent["bg"])
-        tk.Label(
-            row, text=text.upper(), bg=parent["bg"],
-            fg=Theme.TEXT_MUTED, font=self.f_eyebrow,
-        ).pack(side="left")
-        if optional:
-            tk.Label(
-                row, text="  ·  OPTIONAL", bg=parent["bg"],
-                fg=Theme.TEXT_DIM, font=self.f_eyebrow,
-            ).pack(side="left")
-        return row
-
-    def _make_entry(self, parent: tk.Misc) -> tuple[tk.Frame, tk.Entry]:
-        wrap = tk.Frame(
-            parent, bg=Theme.INPUT_BG,
-            highlightthickness=1,
-            highlightbackground=Theme.BORDER,
-            highlightcolor=Theme.BORDER_FOCUS,
-        )
-        entry = tk.Entry(
-            wrap, bd=0, relief="flat",
-            bg=Theme.INPUT_BG, fg=Theme.TEXT,
-            insertbackground=Theme.ACCENT,
-            selectbackground=Theme.ACCENT_DIM, selectforeground=Theme.TEXT,
-            font=self.f_body,
-        )
-        entry.pack(fill="x", padx=14, pady=11)
-        entry.bind("<FocusIn>", lambda _e: wrap.configure(highlightbackground=Theme.BORDER_FOCUS))
-        entry.bind("<FocusOut>", lambda _e: wrap.configure(highlightbackground=Theme.BORDER))
-        return wrap, entry
-
-    # ---- Events ----
+    # ---- Ereignisse ----
 
     def _on_text_modified(self, _event: tk.Event) -> None:
         if not self.txt.edit_modified():
             return
-        text_content = self.txt.get("1.0", "end-1c")
-        count = len(text_content)
-        formatted = f"{count:,}".replace(",", ".")
-        self.counter_label.configure(
-            text=self.t("send.chars", n=formatted),
-            fg=Theme.TEXT_MUTED if count > 0 else Theme.TEXT_DIM,
-        )
+        count = len(self.txt.get("1.0", "end-1c"))
+        self.char_label.configure(text=self.t("send.chars", n=count))
         self.txt.edit_modified(False)
 
     def _reset_to_form(self) -> None:
+        if self._send_view != "result":
+            return
         self.txt.delete("1.0", "end")
-        self.entry_empf.delete(0, "end")
-        self.result_link_var.set("")
-        self._last_metadata_identifier = ""
-        self._on_text_modified(tk.Event())
+        self.entry_recipient.entry.delete(0, "end")
+        self.entry_passphrase.entry.delete(0, "end")
+        self.char_label.configure(text=self.t("send.chars", n=0))
         self._show_send_view("form")
         self.txt.focus_set()
 
@@ -2555,30 +2728,28 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(link)
         self.update_idletasks()
-        self._show_toast(self.t("result.copied"), ok=True)
+        self._show_message(self.t("result.copied"), "success")
 
     def _check_last_status(self) -> None:
-        identifier = self._last_metadata_identifier
-        if not identifier:
-            self._show_toast(self.t("result.no_status"), ok=False)
+        if not self._last_metadata_identifier:
+            self._show_message(self.t("result.no_status"), "error")
             return
-        self._refresh_history_entry(identifier, also_update_result=True)
+        self._refresh_history_entry(self._last_metadata_identifier, also_update_result=True)
 
-    # ---- Burn ----
+    # ---- Verbrennen ----
 
     def _is_burnable(self, state: str) -> bool:
         return (state or "").lower() not in OTSClient.TERMINAL_STATES
 
     def _burn_last_secret(self) -> None:
-        identifier = self._last_metadata_identifier
-        if not identifier:
-            self._show_toast(self.t("result.no_status"), ok=False)
+        if not self._last_metadata_identifier:
+            self._show_message(self.t("result.no_status"), "error")
             return
-        self._burn_secret(identifier, from_result=True)
+        self._burn_secret(self._last_metadata_identifier, from_result=True)
 
     def _burn_secret(self, identifier: str, *, from_result: bool = False) -> None:
         if not identifier:
-            self._show_toast(self.t("error.no_id"), ok=False)
+            self._show_message(self.t("error.no_id"), "error")
             return
         if not messagebox.askyesno(
             self.t("burn.confirm_title"), self.t("burn.confirm"),
@@ -2604,7 +2775,7 @@ class App(tk.Tk):
             self.after(0, lambda: self._on_burn_failed(message, from_result))
             return
         except Exception as exc:
-            # Ohne diesen Zweig stirbt der Thread still und der Button bliebe
+            # Ohne diesen Zweig stirbt der Thread still und der Knopf bliebe
             # dauerhaft auf "Verbrenne …" stehen.
             logger.exception("Unerwarteter Fehler beim Verbrennen")
             message = self.t("error.unexpected", error=exc)
@@ -2614,11 +2785,10 @@ class App(tk.Tk):
 
     def _on_burned(self, identifier: str, new_state: str, from_result: bool) -> None:
         self.history.update_state(identifier, new_state)
-        self._show_toast(self.t("burn.done"), ok=True, duration=4000)
+        self._show_message(self.t("burn.done"), "success")
         if from_result:
             self.result_burn_btn.set_text(self.t("burn.action"))
-            color, label = self._state_visual(new_state)
-            self.result_status_label.configure(text=f"●  {label}", fg=color)
+            self._update_result_state(new_state)
         if self._current_section == "history":
             self._render_history()
 
@@ -2626,9 +2796,9 @@ class App(tk.Tk):
         if from_result:
             self.result_burn_btn.set_text(self.t("burn.action"))
             self.result_burn_btn.set_enabled(True)
-        self._show_toast(self.t("burn.failed", error=message), ok=False, duration=5000)
+        self._show_message(self.t("burn.failed", error=message), "error")
 
-    # ---- Connection test ----
+    # ---- Verbindungstest ----
 
     def _test_connection(self, url: str, user: str, key: str) -> None:
         self.test_btn.set_text(self.t("settings.testing"))
@@ -2661,15 +2831,16 @@ class App(tk.Tk):
         self.test_btn.set_text(self.t("settings.test"))
         self.test_btn.set_enabled(True)
         if info is None:
-            self._show_toast(self.t("settings.test_fail", error=error), ok=False, duration=5000)
+            self._show_message(self.t("settings.test_fail", error=error), "error")
             return
         if info.authenticated:
-            msg = self.t("settings.test_ok_full", version=info.version, status=info.status)
+            self._show_message(
+                self.t("settings.test_ok_full", version=info.version, status=info.status),
+                "success")
         else:
-            msg = self.t("settings.test_ok_anon", version=info.version)
-        self._show_toast(msg, ok=True, duration=4000)
+            self._show_message(self.t("settings.test_ok_anon", version=info.version), "warning")
 
-    # ---- History actions ----
+    # ---- Verlauf: Aktionen ----
 
     def _refresh_history_entry(self, identifier: str, *, also_update_result: bool = False) -> None:
         if not identifier:
@@ -2680,39 +2851,36 @@ class App(tk.Tk):
             daemon=True,
         ).start()
 
-    def _refresh_history_entry_worker(
-        self, client: OTSClient, identifier: str, also_update_result: bool,
-    ) -> None:
+    def _refresh_history_entry_worker(self, client: OTSClient, identifier: str,
+                                      also_update_result: bool) -> None:
         try:
             new_state = client.fetch_status(identifier)
         except OTSError as exc:
             message = self._error_text(exc)
-            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
+            self.after(0, lambda: self._show_message(message, "error"))
             return
         except Exception as exc:
             logger.exception("Unerwarteter Fehler beim Status-Refresh")
             message = self.t("error.unexpected", error=exc)
-            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
+            self.after(0, lambda: self._show_message(message, "error"))
             return
         self.after(0, lambda: self._on_state_refreshed(identifier, new_state, also_update_result))
 
     def _on_state_refreshed(self, identifier: str, new_state: str, update_result: bool) -> None:
         self.history.update_state(identifier, new_state)
-        color, label = self._state_visual(new_state)
-        self._show_toast(f"{self.t('result.status_label').title()}: {label}", ok=True)
+        _color, label = self._state_visual(new_state)
+        self._show_message(self.t("history.state_now", state=label), "info", duration=4000)
         if self._current_section == "history":
             self._render_history()
         if update_result and identifier == self._last_metadata_identifier:
-            self.result_status_label.configure(
-                text=f"●  {label}", fg=color,
-            )
+            self._update_result_state(new_state)
 
     def _refresh_all_history(self) -> None:
         identifiers = [e.metadata_identifier for e in self.history.entries() if e.metadata_identifier]
         if not identifiers:
-            self._show_toast(self.t("history.empty"), ok=True)
+            self._show_message(self.t("history.empty"), "info", duration=3000)
             return
-        self._show_toast(self.t("history.refreshing", n=len(identifiers)), ok=True, duration=1500)
+        self._show_message(self.t("history.refreshing", n=len(identifiers)), "info", duration=2000)
         # Ein Worker, der die Einträge seriell abfragt: bei 200 Einträgen wären es
         # sonst 200 parallele Threads/Verbindungen – und ein sicheres Rate-Limit.
         threading.Thread(
@@ -2739,17 +2907,46 @@ class App(tk.Tk):
     def _apply_refreshed_state(self, identifier: str, new_state: str) -> None:
         self.history.update_state(identifier, new_state)
         if identifier == self._last_metadata_identifier:
-            color, label = self._state_visual(new_state)
-            self.result_status_label.configure(text=f"●  {label}", fg=color)
+            self._update_result_state(new_state)
 
     def _on_refresh_all_done(self, total: int, failed: int) -> None:
         if self._current_section == "history":
             self._render_history()
         if failed:
-            self._show_toast(
+            self._show_message(
                 self.t("history.refresh_done", ok=total - failed, total=total, failed=failed),
-                ok=False, duration=4000,
-            )
+                "warning")
+        else:
+            self._show_message(self.t("history.refresh_ok", n=total), "success")
+
+    def _copy_share_link(self, identifier: str) -> None:
+        if not identifier:
+            self._show_message(self.t("error.no_id"), "error")
+            return
+        self._show_message(self.t("history.fetching_share"), "info", duration=2000)
+        threading.Thread(
+            target=self._copy_share_link_worker, args=(self.client, identifier), daemon=True,
+        ).start()
+
+    def _copy_share_link_worker(self, client: OTSClient, identifier: str) -> None:
+        try:
+            link = client.share_link(identifier)
+        except OTSError as exc:
+            message = self._error_text(exc)
+            self.after(0, lambda: self._show_message(message, "error"))
+            return
+        except Exception as exc:
+            logger.exception("Unerwarteter Fehler beim Holen des Empfänger-Links")
+            message = self.t("error.unexpected", error=exc)
+            self.after(0, lambda: self._show_message(message, "error"))
+            return
+        self.after(0, lambda: self._on_share_link(link))
+
+    def _on_share_link(self, link: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(link)
+        self.update_idletasks()
+        self._show_message(self.t("history.copy_share"), "success")
 
     def _open_status_link(self, identifier: str) -> None:
         """Öffnet die Verwaltungsseite des Secrets im Browser.
@@ -2765,64 +2962,35 @@ class App(tk.Tk):
             logger.exception("Konnte den Browser nicht öffnen.")
             opened = False
         if opened:
-            self._show_toast(self.t("history.open_meta"), ok=True)
+            self._show_message(self.t("history.open_meta"), "success")
             return
         # Ohne konfigurierten Browser bleibt der Link wenigstens greifbar.
         self.clipboard_clear()
         self.clipboard_append(url)
         self.update_idletasks()
-        self._show_toast(self.t("history.open_failed"), ok=False, duration=4000)
-
-    def _copy_share_link(self, identifier: str) -> None:
-        if not identifier:
-            self._show_toast(self.t("error.no_id"), ok=False)
-            return
-        self._show_toast(self.t("history.fetching_share"), ok=True, duration=1500)
-        threading.Thread(
-            target=self._copy_share_link_worker, args=(self.client, identifier), daemon=True,
-        ).start()
-
-    def _copy_share_link_worker(self, client: OTSClient, identifier: str) -> None:
-        try:
-            link = client.share_link(identifier)
-        except OTSError as exc:
-            message = self._error_text(exc)
-            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
-            return
-        except Exception as exc:
-            logger.exception("Unerwarteter Fehler beim Holen des Empfänger-Links")
-            message = self.t("error.unexpected", error=exc)
-            self.after(0, lambda: self._show_toast(message, ok=False, duration=5000))
-            return
-        self.after(0, lambda: self._on_share_link(link))
-
-    def _on_share_link(self, link: str) -> None:
-        self.clipboard_clear()
-        self.clipboard_append(link)
-        self.update_idletasks()
-        self._show_toast(self.t("history.copy_share"), ok=True, duration=4000)
+        self._show_message(self.t("history.open_failed"), "warning")
 
     def _delete_history_entry(self, identifier: str) -> None:
         self.history.remove(identifier)
         self._render_history()
 
     def _clear_history(self) -> None:
+        if not self.history.entries():
+            return
+        if not messagebox.askyesno(self.t("history.clear"), self.t("history.clear_confirm"),
+                                   icon="warning", default="no", parent=self):
+            return
         self.history.clear()
         self._render_history()
-        self._show_toast(self.t("history.cleared"), ok=True)
+        self._show_message(self.t("history.cleared"), "success")
 
-    def _save_to_history(
-        self,
-        result: ShareResult,
-        recipient: Optional[str],
-        ttl_label: str,
-        ttl_seconds: int,
-    ) -> None:
+    def _save_to_history(self, result: ShareResult, recipient: Optional[str],
+                         ttl_key: str, ttl_seconds: int, has_passphrase: bool) -> None:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         entry = HistoryEntry(
             created_at=now,
             recipient=recipient,
-            ttl_label=ttl_label,
+            ttl_label=ttl_key,
             ttl_seconds=ttl_seconds,
             metadata_key=result.metadata_key,
             metadata_identifier=result.metadata_identifier,
@@ -2831,43 +2999,44 @@ class App(tk.Tk):
             secret_preview=result.receipt_shortid,
             last_state=result.state,
             last_checked=now,
+            has_passphrase=has_passphrase,
         )
         self.history.add(entry)
         if self._current_section == "history":
             self._render_history()
 
-    # ---- Submit flow ----
+    # ---- Senden ----
 
     def _submit(self) -> None:
         if self._send_view != "form" or self._current_section != "send":
             return
         secret = self.txt.get("1.0", "end-1c").strip()
         if not secret:
-            self._show_toast(self.t("send.empty"), ok=False)
+            self._show_message(self.t("send.empty"), "error")
             self.txt.focus_set()
             return
 
-        recipient = self.entry_empf.get().strip()
-        ttl_preset = self.pill_bar.selected_preset()
+        recipient = self.entry_recipient.entry.get().strip()
+        passphrase = self.entry_passphrase.entry.get().strip()
+        ttl_preset = preset_for_key(self.ttl_group.value)
 
         self.submit_btn.set_enabled(False)
         self.submit_btn.set_text(self.t("send.sending"))
-        self.progress.start(10)
         threading.Thread(
             target=self._request_thread,
-            args=(self.client, secret, ttl_preset, recipient or None),
+            args=(self.client, secret, ttl_preset, recipient or None, passphrase or None),
             daemon=True,
         ).start()
 
-    def _request_thread(
-        self, client: OTSClient, secret: str, ttl_preset: TTLPreset, recipient: Optional[str],
-    ) -> None:
+    def _request_thread(self, client: OTSClient, secret: str, ttl_preset: TTLPreset,
+                        recipient: Optional[str], passphrase: Optional[str]) -> None:
         try:
-            result = client.share(secret, ttl_preset.seconds, recipient)
+            result = client.share(secret, ttl_preset.seconds, recipient, passphrase)
             # share_url stammt aus der Antwort (korrekt auch bei Custom Domains);
             # der aus dem API-Host gebaute Link ist nur der Fallback.
             secret_link = result.share_url or f"{self.link_base}/{result.secret_key}"
-            self.after(0, lambda: self._on_success(secret_link, result, ttl_preset, recipient))
+            self.after(0, lambda: self._on_success(
+                secret_link, result, ttl_preset, recipient, bool(passphrase)))
         except OTSError as exc:
             message = self._error_text(exc)
             self.after(0, lambda: self._on_error(message))
@@ -2876,14 +3045,8 @@ class App(tk.Tk):
             message = self.t("error.unexpected", error=exc)
             self.after(0, lambda: self._on_error(message))
 
-    def _on_success(
-        self,
-        link: str,
-        result: ShareResult,
-        ttl_preset: TTLPreset,
-        recipient: Optional[str],
-    ) -> None:
-        self.progress.stop()
+    def _on_success(self, link: str, result: ShareResult, ttl_preset: TTLPreset,
+                    recipient: Optional[str], has_passphrase: bool) -> None:
         self.submit_btn.set_text(self.t("send.create"))
         self.submit_btn.set_enabled(True)
 
@@ -2895,34 +3058,33 @@ class App(tk.Tk):
         self.update_idletasks()
 
         try:
-            self._save_to_history(result, recipient, ttl_preset.key, ttl_preset.seconds)
+            self._save_to_history(result, recipient, ttl_preset.key,
+                                  ttl_preset.seconds, has_passphrase)
         except Exception:
             logger.exception("History-Save fehlgeschlagen.")
 
-        # Result-View befüllen
         self.result_link_var.set(link)
-        self.result_entry.configure(state="normal")
-        self.result_entry.selection_range(0, "end")
-        self.result_entry.configure(state="readonly")
-
-        color, label = self._state_visual(result.state)
-        sub = self.t("result.status_waiting" if result.state == STATE_NEW else "result.status_history")
-        self.result_status_label.configure(text=f"●  {label}  –  {sub}", fg=color)
-
+        self._update_result_state(result.state)
+        self.result_passphrase_label.configure(
+            text=self.t("result.passphrase_note") if has_passphrase else "")
         self._show_send_view("result")
 
         if result.state and result.state != STATE_NEW:
             logger.warning("Secret kommt bereits mit state=%s zurück", result.state)
-            self._show_toast(self.t("warn.consumed", state=result.state),
-                             ok=False, duration=5000)
+            self._show_message(self.t("warn.consumed", state=result.state), "warning")
         else:
-            self._show_toast(self.t("result.copied"), ok=True)
+            self._show_message(self.t("result.copied"), "success")
+
+    def _update_result_state(self, state: str) -> None:
+        color, label = self._state_visual(state)
+        self.result_state_label.configure(text=label, fg=color)
+        sub = self.t("result.status_waiting" if state == STATE_NEW else "result.status_history")
+        self.result_status_label.configure(text=sub)
 
     def _on_error(self, message: str) -> None:
-        self.progress.stop()
         self.submit_btn.set_text(self.t("send.create"))
         self.submit_btn.set_enabled(True)
-        self._show_toast(message, ok=False)
+        self._show_message(message, "error")
 
 
 # ============================================================

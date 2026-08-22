@@ -49,19 +49,29 @@ def test_sections_can_be_switched(app: ots.App) -> None:
 
 
 def test_the_default_ttl_is_preselected(app: ots.App) -> None:
-    assert app.pill_bar.selected_key == ots.DEFAULT_TTL_KEY
-    assert app.pill_bar.selected_preset().seconds == 604800
+    assert app.ttl_group.value == ots.DEFAULT_TTL_KEY
+    assert ots.preset_for_key(app.ttl_group.value).seconds == 604800
 
 
-def test_selecting_a_ttl_pill_updates_the_selection(app: ots.App) -> None:
-    app.pill_bar._select(ots.preset_for_key("5m"))
+def test_choosing_a_ttl_updates_the_selection(app: ots.App) -> None:
+    app.ttl_group.set_value("5m")
     app.update_idletasks()
-    assert app.pill_bar.selected_preset().seconds == 300
+    assert ots.preset_for_key(app.ttl_group.value).seconds == 300
 
 
-def test_ttl_pills_are_labelled_in_the_configured_language(app: ots.App) -> None:
+def test_the_ttl_group_is_keyboard_operable(app: ots.App) -> None:
+    """Jede Auswahl muss ohne Maus erreichbar sein."""
+    group = app.ttl_group
+    keys = [key for key, _label in group._items]
+    group._focus_index = keys.index("7d")
+    group._step(1)
+    group._activate()
+    assert group.value == keys[keys.index("7d") + 1]
+
+
+def test_ttl_labels_follow_the_configured_language(app: ots.App) -> None:
     assert app.lang == "en"
-    labels = {widget.cget("text") for widget in app.pill_bar._labels.values()}
+    labels = {label for _key, label in app.ttl_group._items}
     assert ots.STRINGS["ttl.7d"]["en"] in labels
     assert ots.STRINGS["ttl.7d"]["de"] not in labels
 
@@ -74,8 +84,8 @@ def test_saving_settings_switches_the_language(app: ots.App) -> None:
     app.update_idletasks()
     assert app.lang == "de"
     assert app.settings.default_ttl == "1h"
-    assert app.pill_bar.selected_key == "1h"
-    labels = {widget.cget("text") for widget in app.pill_bar._labels.values()}
+    assert app.ttl_group.value == "1h"
+    labels = {label for _key, label in app.ttl_group._items}
     assert ots.STRINGS["ttl.7d"]["de"] in labels
 
 
@@ -171,6 +181,58 @@ def test_the_recipient_link_is_never_persisted(app: ots.App, tmp_path: Path) -> 
 def test_the_recipient_link_lands_on_the_clipboard(app: ots.App) -> None:
     app._on_share_link("https://eu.onetimesecret.com/secret/SK")
     assert app.clipboard_get() == "https://eu.onetimesecret.com/secret/SK"
+
+
+def test_a_message_never_pushes_a_field_out_of_the_send_form(app: ots.App) -> None:
+    """Eine eingeblendete Meldung nahm dem Formular Hoehe weg - die untersten
+    Zeilen (Passphrase, Erzeugen) verschwanden dabei kommentarlos."""
+    # Ein zurueckgezogenes Fenster rechnet keine Geometrie aus - fuer diesen Test
+    # muss es kurz sichtbar sein.
+    app.deiconify()
+    app._show_section("send")
+    app._show_message("Eine Meldung, die Platz braucht", "success")
+    app.update()
+    app.update_idletasks()
+
+    column = app.entry_passphrase.master.master
+    assert column.winfo_height() > 100, "Formular wurde nicht ausgemessen"
+    for child in column.winfo_children():
+        bottom = child.winfo_y() + child.winfo_height()
+        assert bottom <= column.winfo_height(), f"{child} ragt aus dem Formular"
+    assert app.entry_passphrase.winfo_height() > 1
+    assert app.submit_btn.winfo_height() > 1
+    app.withdraw()
+
+
+def test_the_passphrase_can_be_revealed(app: ots.App) -> None:
+    entry = app.entry_passphrase.entry
+    assert entry.cget("show") == "●"
+    app.passphrase_reveal_btn._command()
+    assert entry.cget("show") == ""
+    app.passphrase_reveal_btn._command()
+    assert entry.cget("show") == "●"
+
+
+def test_a_passphrase_reaches_the_api(app: ots.App, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: dict = {}
+
+    class FakeClient:
+        def share(self, secret, ttl, recipient=None, passphrase=None):
+            sent.update(secret=secret, ttl=ttl, recipient=recipient, passphrase=passphrase)
+            return ots.ShareResult(secret_key="SK", metadata_key="MK",
+                                   metadata_identifier="MID", state=ots.STATE_NEW)
+
+    app.txt.insert("1.0", "geheim")
+    app.entry_passphrase.entry.insert(0, "  hunter2  ")
+    app._request_thread(FakeClient(), "geheim", ots.preset_for_key("1h"), None, "hunter2")
+    assert sent["passphrase"] == "hunter2"
+
+    app._on_success("https://eu.onetimesecret.com/secret/SK",
+                    ots.ShareResult("SK", "MK", "MID", ots.STATE_NEW),
+                    ots.preset_for_key("1h"), None, True)
+    app.update()
+    assert app.result_passphrase_label.cget("text")
+    assert app.history.entries()[0].has_passphrase is True
 
 
 def test_burnable_states(app: ots.App) -> None:
