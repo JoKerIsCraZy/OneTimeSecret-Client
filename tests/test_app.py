@@ -23,10 +23,14 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(ots, "_KEYRING_AVAILABLE", False)
 
+    window: ots.App | None = None
     try:
         window = ots.App()
     except tk.TclError as exc:  # pragma: no cover - CI ohne Desktop
         pytest.skip(f"Tk is unavailable here: {exc}")
+    # pytest.skip() beendet den Test hier - statische Analyse sieht das nicht und
+    # haelt `window` fuer moeglicherweise unbelegt.
+    assert window is not None
 
     window.withdraw()
     window.update_idletasks()
